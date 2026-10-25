@@ -39,12 +39,29 @@ class HomeChartTrack {
   );
 }
 
+class HomeChartArtist {
+  const HomeChartArtist({
+    required this.name,
+    required this.artworkUrl,
+    required this.rank,
+    required this.songs,
+    required this.snapshotDays,
+  });
+
+  final String name;
+  final String artworkUrl;
+  final int rank;
+  final List<HomeChartTrack> songs;
+  final int snapshotDays;
+}
+
 class HomeChartsService {
   HomeChartsService._();
 
   static final HomeChartsService instance = HomeChartsService._();
   static const _colombiaKey = 'soundneed_pc_home_colombia_chart_v1';
   static const _worldKey = 'soundneed_pc_home_world_chart_v1';
+  static const _worldSnapshotKey = 'soundneed_pc_world_artist_snapshots_v1';
   static const _cacheAge = Duration(minutes: 45);
   static const _worldMarkets = [
     'us',
@@ -70,6 +87,128 @@ class HomeChartsService {
 
   Future<List<HomeChartTrack>> loadWorld({bool refresh = false}) =>
       _loadChart(key: _worldKey, refresh: refresh, fetch: _fetchWorld);
+
+  Future<List<HomeChartArtist>> rankWorldArtists(
+    List<HomeChartTrack> currentChart,
+  ) async {
+    if (currentChart.isEmpty) return const [];
+    final preferences = await SharedPreferences.getInstance();
+    final now = DateTime.now();
+    final cutoff = now.subtract(const Duration(days: 30));
+    final snapshots = <Map<String, dynamic>>[];
+    final raw = preferences.getString(_worldSnapshotKey);
+    if (raw != null && raw.isNotEmpty) {
+      try {
+        final decoded = jsonDecode(raw) as List? ?? const [];
+        snapshots.addAll(
+          decoded.whereType<Map>().map(Map<String, dynamic>.from).where((item) {
+            final date = DateTime.tryParse(item['date']?.toString() ?? '');
+            return date != null && !date.isBefore(cutoff);
+          }),
+        );
+      } catch (_) {
+        snapshots.clear();
+      }
+    }
+    final today = _dayKey(now);
+    snapshots.removeWhere((item) => item['date'] == today);
+    snapshots.add({
+      'date': today,
+      'tracks': currentChart.take(100).map((track) => track.toJson()).toList(),
+    });
+    await preferences.setString(_worldSnapshotKey, jsonEncode(snapshots));
+
+    final artistScores = <String, int>{};
+    final artistNames = <String, String>{};
+    final artistSongs = <String, Map<String, _RankedWorldSong>>{};
+    for (final snapshot in snapshots) {
+      for (final value
+          in (snapshot['tracks'] as List? ?? const []).whereType<Map>()) {
+        final track = HomeChartTrack.fromJson(
+          Map<String, dynamic>.from(value),
+          0,
+        );
+        if (track.title.isEmpty || track.artist.isEmpty || track.rank < 1) {
+          continue;
+        }
+        final artistKey = _normalizeChartValue(track.artist);
+        final songKey = _normalizeChartValue(track.title);
+        if (artistKey.isEmpty || songKey.isEmpty) continue;
+        final points = 101 - track.rank.clamp(1, 100);
+        artistScores.update(
+          artistKey,
+          (score) => score + points,
+          ifAbsent: () => points,
+        );
+        artistNames.putIfAbsent(artistKey, () => track.artist);
+        final songs = artistSongs.putIfAbsent(artistKey, () => {});
+        final previous = songs[songKey];
+        if (previous == null) {
+          songs[songKey] = _RankedWorldSong(track, points);
+        } else {
+          previous.points += points;
+        }
+      }
+    }
+
+    final keys = artistScores.keys.toList()
+      ..sort((a, b) => artistScores[b]!.compareTo(artistScores[a]!));
+    return List.unmodifiable([
+      for (var artistIndex = 0; artistIndex < keys.length; artistIndex++)
+        _buildRankedArtist(
+          keys[artistIndex],
+          artistIndex + 1,
+          artistNames,
+          artistSongs,
+          snapshots.length,
+        ),
+    ]);
+  }
+
+  HomeChartArtist _buildRankedArtist(
+    String key,
+    int rank,
+    Map<String, String> names,
+    Map<String, Map<String, _RankedWorldSong>> songsByArtist,
+    int snapshotDays,
+  ) {
+    final songs = songsByArtist[key]!.values.toList()
+      ..sort((a, b) => b.points.compareTo(a.points));
+    final tracks = [
+      for (var index = 0; index < songs.length && index < 10; index++)
+        HomeChartTrack(
+          id: songs[index].track.id,
+          title: songs[index].track.title,
+          artist: songs[index].track.artist,
+          artworkUrl: songs[index].track.artworkUrl,
+          rank: index + 1,
+        ),
+    ];
+    return HomeChartArtist(
+      name: names[key]!,
+      artworkUrl: tracks.isEmpty ? '' : tracks.first.artworkUrl,
+      rank: rank,
+      songs: List.unmodifiable(tracks),
+      snapshotDays: snapshotDays,
+    );
+  }
+
+  String _dayKey(DateTime value) =>
+      '${value.year.toString().padLeft(4, '0')}-'
+      '${value.month.toString().padLeft(2, '0')}-'
+      '${value.day.toString().padLeft(2, '0')}';
+
+  String _normalizeChartValue(String value) => value
+      .toLowerCase()
+      .replaceAll('á', 'a')
+      .replaceAll('é', 'e')
+      .replaceAll('í', 'i')
+      .replaceAll('ó', 'o')
+      .replaceAll('ú', 'u')
+      .replaceAll('ü', 'u')
+      .replaceAll('ñ', 'n')
+      .replaceAll(RegExp(r'[^a-z0-9]+'), ' ')
+      .trim();
 
   Future<List<HomeChartTrack>> _loadChart({
     required String key,
@@ -482,4 +621,11 @@ class HomePodcastService {
       _ => 0,
     };
   }
+}
+
+class _RankedWorldSong {
+  _RankedWorldSong(this.track, this.points);
+
+  final HomeChartTrack track;
+  int points;
 }

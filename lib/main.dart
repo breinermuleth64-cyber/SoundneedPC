@@ -11,12 +11,13 @@ import 'package:flutter/foundation.dart' show compute;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show MethodChannel;
 import 'package:just_audio/just_audio.dart';
-import 'package:media_kit/media_kit.dart' hide PlayerState;
+import 'package:media_kit/media_kit.dart' hide PlayerState, Track;
 import 'package:media_kit_video/media_kit_video.dart' as media_video;
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:youtube_explode_dart/youtube_explode_dart.dart' hide Playlist;
 
+import 'models/track.dart';
 import 'pages/albums_page.dart';
 import 'pages/artists_page.dart';
 import 'pages/favorites_page.dart';
@@ -30,8 +31,11 @@ import 'widgets/now_playing_panel.dart';
 import 'widgets/ambient_album_background.dart';
 import 'widgets/online_search_results.dart';
 import 'services/home_discovery_service.dart';
+import 'services/listening_history_service.dart';
 import 'widgets/soundneed_sidebar.dart';
 import 'widgets/soundneed_top_bar.dart';
+
+export 'models/track.dart';
 
 const _bg = Color(0xFF000000);
 const _panel = Color(0xFF151522);
@@ -70,42 +74,6 @@ const _audioExtensions = <String>[
   'aif',
   'ape',
 ];
-
-class Track {
-  const Track({
-    required this.path,
-    required this.title,
-    required this.artist,
-    this.album = '',
-    this.coverPath,
-    this.durationMs,
-  });
-
-  final String path;
-  final String title;
-  final String artist;
-  final String album;
-  final String? coverPath;
-  final int? durationMs;
-
-  Map<String, Object?> toJson() => {
-    'path': path,
-    'title': title,
-    'artist': artist,
-    'album': album,
-    'coverPath': coverPath,
-    'durationMs': durationMs,
-  };
-
-  factory Track.fromJson(Map<String, dynamic> json) => Track(
-    path: json['path'] as String,
-    title: json['title'] as String? ?? '',
-    artist: json['artist'] as String? ?? '',
-    album: json['album'] as String? ?? '',
-    coverPath: json['coverPath'] as String?,
-    durationMs: json['durationMs'] as int?,
-  );
-}
 
 class _ScannedTrack {
   const _ScannedTrack(this.track, this.coverBytes);
@@ -266,8 +234,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
   );
   final Player _videoPlayer = Player();
   Player? _localAudioFallbackPlayer;
-  Player get _localAudioFallback =>
-      _localAudioFallbackPlayer ??= Player();
+  Player get _localAudioFallback => _localAudioFallbackPlayer ??= Player();
   late final media_video.VideoController _videoController =
       media_video.VideoController(_videoPlayer);
   final YoutubeExplode _youtube = YoutubeExplode(
@@ -321,6 +288,9 @@ class _LibraryScreenState extends State<LibraryScreen> {
   );
   List<HomeChartTrack> _colombiaTop = const [];
   List<HomeChartTrack> _worldTop = const [];
+  List<HomeChartArtist> _worldArtists = const [];
+  List<String> _preferredArtists = const [];
+  Set<String> _recentlyHeardTrackKeys = const {};
   String? _resolvingChartKey;
   final ValueNotifier<Duration> _position = ValueNotifier(Duration.zero);
   Duration? _duration;
@@ -342,6 +312,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
   void initState() {
     super.initState();
     _restore();
+    unawaited(_loadListeningHistory());
     unawaited(_loadHomeChart(_colombiaChart, colombia: true));
     unawaited(_loadHomeChart(_worldChart, colombia: false));
     unawaited(_loadHomeCategory(_discoverMusic));
@@ -628,7 +599,8 @@ class _LibraryScreenState extends State<LibraryScreen> {
     if (availableTracks.isEmpty) {
       if (mounted) {
         setState(() {
-          _error = 'No quedan archivos disponibles para reproducir en esta cola.';
+          _error =
+              'No quedan archivos disponibles para reproducir en esta cola.';
         });
       }
       return;
@@ -671,15 +643,18 @@ class _LibraryScreenState extends State<LibraryScreen> {
         autoplay: autoplay,
         keepVideoMode: keepVideoMode,
       );
+      if (autoplay) {
+        final track = availableTracks[queueStartAt];
+        unawaited(_recordListening(track.title, track.artist));
+      }
     } catch (error) {
       final failedTrack = availableTracks[queueStartAt];
       final stillExists = await File(failedTrack.path).exists();
       if (mounted) {
         setState(
-          () => _error =
-              stillExists
-                  ? 'No se pudo reproducir "${failedTrack.title}" con el reproductor local. Comprueba que el formato sea compatible. Ruta: ${failedTrack.path}. Error: $error'
-                  : 'No se encuentra el archivo de "${failedTrack.title}". Comprueba que la unidad o carpeta siga conectada. Ruta: ${failedTrack.path}. Error: $error',
+          () => _error = stillExists
+              ? 'No se pudo reproducir "${failedTrack.title}" con el reproductor local. Comprueba que el formato sea compatible. Ruta: ${failedTrack.path}. Error: $error'
+              : 'No se encuentra el archivo de "${failedTrack.title}". Comprueba que la unidad o carpeta siga conectada. Ruta: ${failedTrack.path}. Error: $error',
         );
       }
     }
@@ -704,9 +679,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
         Playlist(
           List.generate(
             tracks.length,
-            (index) => Media(
-              Uri.file(tracks[index].path).toString(),
-            ),
+            (index) => Media(Uri.file(tracks[index].path).toString()),
             growable: false,
           ),
           index: startAt,
@@ -752,8 +725,49 @@ class _LibraryScreenState extends State<LibraryScreen> {
         .listen((playlist) {
           if (_usingMediaKitForLocalAudio && mounted) {
             setState(() => _currentIndex = playlist.index);
+            if (_localAudioFallback.state.playing) {
+              final track = _currentLocalTrack;
+              if (track != null) {
+                unawaited(_recordListening(track.title, track.artist));
+              }
+            }
           }
         });
+  }
+
+  Future<void> _loadListeningHistory() async {
+    final profile = await ListeningHistoryService.instance.load();
+    if (!mounted) return;
+    setState(() {
+      _preferredArtists = profile.preferredArtists;
+      _recentlyHeardTrackKeys = profile.recentTrackKeys;
+    });
+  }
+
+  Future<void> _recordListening(String title, String artist) async {
+    final profile = await ListeningHistoryService.instance.record(
+      title: title,
+      artist: artist,
+    );
+    if (!mounted) return;
+    setState(() {
+      _preferredArtists = profile.preferredArtists;
+      _recentlyHeardTrackKeys = profile.recentTrackKeys;
+    });
+  }
+
+  Future<void> _playCollection(
+    List<Track> tracks,
+    int startAt,
+    bool shuffle,
+  ) async {
+    if (tracks.isEmpty) return;
+    if (shuffle) {
+      final mixed = List<Track>.of(tracks)..shuffle();
+      await _loadQueue(mixed);
+      return;
+    }
+    await _loadQueue(tracks, startAt: startAt);
   }
 
   Future<void> _playTrack(Track track) async {
@@ -940,7 +954,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
     _playlists.remove(name);
     if (_playlistView == name) {
       _playlistView = null;
-      _section = 'Tu música';
+      _section = 'Playlists';
     }
     await _savePlaylists();
     if (mounted) setState(() {});
@@ -949,11 +963,38 @@ class _LibraryScreenState extends State<LibraryScreen> {
   Future<void> _removeFromCurrentPlaylist(String trackPath) async {
     final playlist = _playlistView;
     if (playlist == null) return;
+    await _removeTrackFromPlaylist(playlist, trackPath);
+  }
+
+  Future<void> _removeTrackFromPlaylist(
+    String playlist,
+    String trackPath,
+  ) async {
     _playlists[playlist]?.remove(trackPath);
     await _savePlaylists();
     if (mounted) {
       setState(() {});
       _toast('Canción quitada de $playlist.');
+    }
+  }
+
+  Future<void> _addTracksToPlaylist(String playlist, List<Track> tracks) async {
+    final paths = _playlists[playlist];
+    if (paths == null || tracks.isEmpty) return;
+    var added = 0;
+    for (final track in tracks) {
+      if (paths.contains(track.path)) continue;
+      paths.add(track.path);
+      added++;
+    }
+    await _savePlaylists();
+    if (mounted) {
+      setState(() {});
+      _toast(
+        added == 1
+            ? 'Se agregó 1 canción a $playlist.'
+            : 'Se agregaron $added canciones a $playlist.',
+      );
     }
   }
 
@@ -1143,6 +1184,9 @@ class _LibraryScreenState extends State<LibraryScreen> {
       final chart = colombia
           ? await HomeChartsService.instance.loadColombia(refresh: refresh)
           : await HomeChartsService.instance.loadWorld(refresh: refresh);
+      final artistTrends = colombia
+          ? null
+          : await HomeChartsService.instance.rankWorldArtists(chart);
       if (!mounted) return;
       final visibleChart = chart.take(30).toList(growable: false);
       setState(() {
@@ -1154,6 +1198,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
               .toList(growable: false);
         } else {
           _worldTop = visibleChart;
+          _worldArtists = artistTrends ?? _worldArtists;
           category.tracks = visibleChart
               .map(_chartTrackToOnlineTrack)
               .toList(growable: false);
@@ -1672,7 +1717,9 @@ class _LibraryScreenState extends State<LibraryScreen> {
         nextIndex < _queue.length &&
         mounted) {
       final path = _queue[nextIndex];
-      final nextTrack = _tracks.where((track) => track.path == path).firstOrNull;
+      final nextTrack = _tracks
+          .where((track) => track.path == path)
+          .firstOrNull;
       if (nextTrack != null) await _playVideoPreview(nextTrack, null);
     }
   }
@@ -2026,6 +2073,10 @@ class _LibraryScreenState extends State<LibraryScreen> {
     try {
       unawaited(_prefetchNextOnlineTrack(requestId));
       await _player.play();
+      final track = _playingOnlineTrack;
+      if (track != null && requestId == _onlinePlaybackRequestId) {
+        unawaited(_recordListening(track.title, track.artist));
+      }
     } catch (error) {
       if (requestId != _onlinePlaybackRequestId) return;
       await _writePlaybackLog('Online playback failed: $error');
@@ -2107,46 +2158,46 @@ class _LibraryScreenState extends State<LibraryScreen> {
               Positioned.fill(
                 child: _videoMode
                     ? (!videoReadyForCurrentTrack
-                        ? Stack(
-                            fit: StackFit.expand,
-                            children: [
-                              AmbientAlbumBackground(artwork: ambientArtwork),
-                              const DecoratedBox(
-                                decoration: _videoBackdropShade,
-                              ),
-                            ],
-                          )
-                        : RepaintBoundary(
-                            child: Stack(
+                          ? Stack(
                               fit: StackFit.expand,
                               children: [
-                                FittedBox(
-                                  fit: BoxFit.cover,
-                                  clipBehavior: Clip.hardEdge,
-                                  child: SizedBox(
-                                    // Blur at a smaller resolution, then scale the
-                                    // softened video to fill the desktop backdrop.
-                                    width: 640,
-                                    height: 360,
-                                    child: ImageFiltered(
-                                      imageFilter: ui.ImageFilter.blur(
-                                        sigmaX: 12,
-                                        sigmaY: 12,
-                                      ),
-                                      child: media_video.Video(
-                                        controller: _videoController,
-                                        fit: BoxFit.cover,
-                                        controls: media_video.NoVideoControls,
-                                      ),
-                                    ),
-                                  ),
-                                ),
+                                AmbientAlbumBackground(artwork: ambientArtwork),
                                 const DecoratedBox(
                                   decoration: _videoBackdropShade,
                                 ),
                               ],
-                            ),
-                          ))
+                            )
+                          : RepaintBoundary(
+                              child: Stack(
+                                fit: StackFit.expand,
+                                children: [
+                                  FittedBox(
+                                    fit: BoxFit.cover,
+                                    clipBehavior: Clip.hardEdge,
+                                    child: SizedBox(
+                                      // Blur at a smaller resolution, then scale the
+                                      // softened video to fill the desktop backdrop.
+                                      width: 640,
+                                      height: 360,
+                                      child: ImageFiltered(
+                                        imageFilter: ui.ImageFilter.blur(
+                                          sigmaX: 12,
+                                          sigmaY: 12,
+                                        ),
+                                        child: media_video.Video(
+                                          controller: _videoController,
+                                          fit: BoxFit.cover,
+                                          controls: media_video.NoVideoControls,
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                  const DecoratedBox(
+                                    decoration: _videoBackdropShade,
+                                  ),
+                                ],
+                              ),
+                            ))
                     : Align(
                         alignment: Alignment.topCenter,
                         child: SizedBox(
@@ -2327,11 +2378,6 @@ class _LibraryScreenState extends State<LibraryScreen> {
               child: CircularProgressIndicator(color: _cyan),
             ),
           )
-        : _section == 'Álbumes' || _section == 'Artistas'
-        ? _notAvailable(
-            '$title agrupados',
-            'La biblioteca ya lee álbum y artista de los metadatos. La vista agrupada estará disponible en una actualización futura.',
-          )
         : _section == 'Buscar'
         ? _searchResultsPanel(tracks, compact)
         : tracks.isEmpty
@@ -2341,6 +2387,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
       compact: compact,
       hasNowPlayingPanel: hasNowPlayingPanel,
       title: title,
+      playlistView: _playlistView,
       trackCount: tracks.length,
       onCreatePlaylist: _createPlaylist,
       playlistNames: _playlists.keys.toList(growable: false),
@@ -2436,9 +2483,62 @@ class _LibraryScreenState extends State<LibraryScreen> {
       ),
       'Tu música' => MusicPage(config: config),
       'Favoritos' => FavoritesPage(config: config),
-      'Álbumes' => AlbumsPage(config: config),
-      'Artistas' => ArtistsPage(config: config),
-      'Playlists' => PlaylistsPage(config: config),
+      'Álbumes' => AlbumsPage(
+        config: config,
+        tracks: _tracks,
+        loading: _loading,
+        compact: compact,
+        currentTrackPath: _currentLocalTrack?.path,
+        isPlaying: _player.playing,
+        favoritePaths: _favorites,
+        onToggleFavorite: (track) => unawaited(_toggleFavorite(track)),
+        onAddToPlaylist: (track) => unawaited(_addToPlaylist(track)),
+        onPlayTracks: _playCollection,
+      ),
+      'Artistas' => ArtistsPage(
+        config: config,
+        tracks: _tracks,
+        loading: _loading,
+        compact: compact,
+        currentTrackPath: _currentLocalTrack?.path,
+        isPlaying: _player.playing,
+        favoritePaths: _favorites,
+        onToggleFavorite: (track) => unawaited(_toggleFavorite(track)),
+        onAddToPlaylist: (track) => unawaited(_addToPlaylist(track)),
+        featuredArtists: _worldArtists.isNotEmpty
+            ? _worldArtists
+                  .take(12)
+                  .map((artist) => artist.name)
+                  .toList(growable: false)
+            : _worldTop
+                  .map((track) => track.artist.trim())
+                  .where((artist) => artist.isNotEmpty)
+                  .toSet()
+                  .take(12)
+                  .toList(growable: false),
+        worldArtists: _worldArtists,
+        trendingTracks: _worldTop,
+        preferredArtists: _preferredArtists,
+        recentlyHeardTrackKeys: _recentlyHeardTrackKeys,
+        onPlayTracks: _playCollection,
+        onPlayArtistStation: _playArtistStation,
+        onPlayChartTrack: (track, queue) async {
+          await _playHomeChartTrack(track, chart: queue);
+        },
+      ),
+      'Playlists' => PlaylistsPage(
+        config: config,
+        tracks: _tracks,
+        playlists: _playlists,
+        favoritePaths: _favorites,
+        currentTrackPath: _currentLocalTrack?.path,
+        isPlaying: _player.playing,
+        onPlayTracks: _playCollection,
+        onToggleFavorite: (track) => unawaited(_toggleFavorite(track)),
+        onAddTracksToPlaylist: _addTracksToPlaylist,
+        onRemoveTrack: (name, track) =>
+            unawaited(_removeTrackFromPlaylist(name, track.path)),
+      ),
       _ => MiddleContentPanel(section: _section, config: config),
     };
   }
@@ -2950,94 +3050,101 @@ class _LibraryScreenState extends State<LibraryScreen> {
     return ValueListenableBuilder<Duration>(
       valueListenable: _position,
       builder: (context, position, child) => MiniPlayer(
-      compact: compact,
-      hasTrack: hasTrack,
-      title: track?.title ?? onlineTrack?.title ?? 'Elige una canción',
-      artist: track?.artist ?? onlineTrack?.artist ?? 'Tu biblioteca te espera',
-      cover: cover,
-      artworkProvider: artworkProvider,
-      isFavorite: track != null && _favorites.contains(track.path),
-      onToggleFavorite: track == null
-          ? null
-          : () => unawaited(_toggleFavorite(track)),
-      // The extracted audio is the playback source of truth. The video may
-      // pause or end independently and must not make the mini player report
-      // that the song has stopped.
-      playingStream: _usingMediaKitForLocalAudio
-          ? _localAudioFallback.stream.playing
-          : _audioPlayingStream,
-      initialPlaying: _usingMediaKitForLocalAudio
-          ? _localAudioFallback.state.playing
-          : _player.playing,
-      loading: _onlinePlaybackLoading,
-      onTogglePlayback: (playing) => hasTrack
-          ? unawaited(_toggleMiniPlayerPlayback(playing))
-          : unawaited(_importFolder()),
-      shuffleEnabled: _usingMediaKitForLocalAudio
-          ? _localAudioFallback.state.shuffle
-          : _player.shuffleModeEnabled,
-      onToggleShuffle: onlineTrack == null
-          ? () async {
-              if (_usingMediaKitForLocalAudio) {
-                await _localAudioFallback.setShuffle(
-                  !_localAudioFallback.state.shuffle,
-                );
-              } else {
-                await _player.setShuffleModeEnabled(
-                  !_player.shuffleModeEnabled,
-                );
+        compact: compact,
+        hasTrack: hasTrack,
+        title: track?.title ?? onlineTrack?.title ?? 'Elige una canción',
+        artist:
+            track?.artist ?? onlineTrack?.artist ?? 'Tu biblioteca te espera',
+        cover: cover,
+        artworkProvider: artworkProvider,
+        isFavorite: track != null && _favorites.contains(track.path),
+        onToggleFavorite: track == null
+            ? null
+            : () => unawaited(_toggleFavorite(track)),
+        // The extracted audio is the playback source of truth. The video may
+        // pause or end independently and must not make the mini player report
+        // that the song has stopped.
+        playingStream: _usingMediaKitForLocalAudio
+            ? _localAudioFallback.stream.playing
+            : _audioPlayingStream,
+        initialPlaying: _usingMediaKitForLocalAudio
+            ? _localAudioFallback.state.playing
+            : _player.playing,
+        loading: _onlinePlaybackLoading,
+        onTogglePlayback: (playing) => hasTrack
+            ? unawaited(_toggleMiniPlayerPlayback(playing))
+            : unawaited(_importFolder()),
+        shuffleEnabled: _usingMediaKitForLocalAudio
+            ? _localAudioFallback.state.shuffle
+            : _player.shuffleModeEnabled,
+        onToggleShuffle: onlineTrack == null
+            ? () async {
+                if (_usingMediaKitForLocalAudio) {
+                  await _localAudioFallback.setShuffle(
+                    !_localAudioFallback.state.shuffle,
+                  );
+                } else {
+                  await _player.setShuffleModeEnabled(
+                    !_player.shuffleModeEnabled,
+                  );
+                }
+                if (mounted) setState(() {});
               }
-              if (mounted) setState(() {});
-            }
-          : null,
-      loopEnabled: _loopEnabled,
-      onToggleLoop: () {
-        final enabled = !_loopEnabled;
-        setState(() => _loopEnabled = enabled);
-        if (_usingMediaKitForLocalAudio) {
-          unawaited(
-            _localAudioFallback.setPlaylistMode(
-              enabled ? PlaylistMode.loop : PlaylistMode.none,
-            ),
-          );
-        } else {
-          unawaited(_player.setLoopMode(enabled ? LoopMode.all : LoopMode.off));
-        }
-      },
-      onPrevious: onlineTrack != null
-          ? (_onlineQueueIndex > 0
-                ? () => unawaited(_skipMiniPlayerTrack(-1))
-                : null)
-          : (_queue.isEmpty ? null : () => unawaited(_skipMiniPlayerTrack(-1))),
-      onNext: onlineTrack != null
-          ? (_onlineQueueIndex >= 0 &&
-                    _onlineQueueIndex < _onlinePlaybackQueue.length - 1
-                ? () => unawaited(_skipMiniPlayerTrack(1))
-                : null)
-          : (_queue.isEmpty ? null : () => unawaited(_skipMiniPlayerTrack(1))),
-      position: position,
-      duration: _duration,
-      positionLabel: _time(position),
-      durationLabel: _time(_duration),
-      onSeek: !hasTrack || _duration == null
-          ? null
-          : (position) => unawaited(_seekMiniPlayer(position)),
-      volume: _volume,
-      onVolumeChanged: (value) {
-        setState(() => _volume = value);
-        if (_usingMediaKitForLocalAudio) {
-          unawaited(_localAudioFallback.setVolume(value * 100));
-        } else {
-          unawaited(_player.setVolume(value));
-        }
-      },
-      queueOpen: _queueOpen,
-      onToggleQueue: () => setState(() => _queueOpen = !_queueOpen),
-      windowMaximized: _windowMaximized,
-      onToggleWindowSize: () => unawaited(_toggleWindowMaximize()),
-      panelColor: _panel,
-      accentColor: _cyan,
-      mutedColor: _muted,
+            : null,
+        loopEnabled: _loopEnabled,
+        onToggleLoop: () {
+          final enabled = !_loopEnabled;
+          setState(() => _loopEnabled = enabled);
+          if (_usingMediaKitForLocalAudio) {
+            unawaited(
+              _localAudioFallback.setPlaylistMode(
+                enabled ? PlaylistMode.loop : PlaylistMode.none,
+              ),
+            );
+          } else {
+            unawaited(
+              _player.setLoopMode(enabled ? LoopMode.all : LoopMode.off),
+            );
+          }
+        },
+        onPrevious: onlineTrack != null
+            ? (_onlineQueueIndex > 0
+                  ? () => unawaited(_skipMiniPlayerTrack(-1))
+                  : null)
+            : (_queue.isEmpty
+                  ? null
+                  : () => unawaited(_skipMiniPlayerTrack(-1))),
+        onNext: onlineTrack != null
+            ? (_onlineQueueIndex >= 0 &&
+                      _onlineQueueIndex < _onlinePlaybackQueue.length - 1
+                  ? () => unawaited(_skipMiniPlayerTrack(1))
+                  : null)
+            : (_queue.isEmpty
+                  ? null
+                  : () => unawaited(_skipMiniPlayerTrack(1))),
+        position: position,
+        duration: _duration,
+        positionLabel: _time(position),
+        durationLabel: _time(_duration),
+        onSeek: !hasTrack || _duration == null
+            ? null
+            : (position) => unawaited(_seekMiniPlayer(position)),
+        volume: _volume,
+        onVolumeChanged: (value) {
+          setState(() => _volume = value);
+          if (_usingMediaKitForLocalAudio) {
+            unawaited(_localAudioFallback.setVolume(value * 100));
+          } else {
+            unawaited(_player.setVolume(value));
+          }
+        },
+        queueOpen: _queueOpen,
+        onToggleQueue: () => setState(() => _queueOpen = !_queueOpen),
+        windowMaximized: _windowMaximized,
+        onToggleWindowSize: () => unawaited(_toggleWindowMaximize()),
+        panelColor: _panel,
+        accentColor: _cyan,
+        mutedColor: _muted,
       ),
     );
   }
@@ -3227,7 +3334,9 @@ class _LibraryScreenState extends State<LibraryScreen> {
         // youtube_explode and can resolve videos rejected by its manifest API.
         try {
           final uri = await _extractNativeNewPipeVideo(candidateId);
-          await _writePlaybackLog('NewPipe resolved video stream: $candidateId');
+          await _writePlaybackLog(
+            'NewPipe resolved video stream: $candidateId',
+          );
           return uri;
         } catch (error) {
           lastVideoError = error;

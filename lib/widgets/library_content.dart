@@ -5,6 +5,7 @@ class LibraryPageConfig {
     required this.compact,
     required this.hasNowPlayingPanel,
     required this.title,
+    this.playlistView,
     required this.trackCount,
     required this.onCreatePlaylist,
     required this.playlistNames,
@@ -22,6 +23,7 @@ class LibraryPageConfig {
   final bool compact;
   final bool hasNowPlayingPanel;
   final String title;
+  final String? playlistView;
   final int trackCount;
   final VoidCallback onCreatePlaylist;
   final List<String> playlistNames;
