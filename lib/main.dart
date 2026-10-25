@@ -311,6 +311,8 @@ class _LibraryScreenState extends State<LibraryScreen> {
   @override
   void initState() {
     super.initState();
+    // Pre-initialize video player to avoid first-time loading issues
+    unawaited(_videoPlayer.open(Media(''), play: false).catchError((_) {}));
     _restore();
     unawaited(_loadListeningHistory());
     unawaited(_loadHomeChart(_colombiaChart, colombia: true));
@@ -320,7 +322,6 @@ class _LibraryScreenState extends State<LibraryScreen> {
       if (!mounted || _usingMediaKitForLocalAudio) return;
       setState(() {
         _currentIndex = index;
-        _position.value = Duration.zero;
         _duration = _player.duration;
       });
     });
@@ -1553,7 +1554,6 @@ class _LibraryScreenState extends State<LibraryScreen> {
       _playingOnlineTrack = track;
       _onlinePlaybackLoading = true;
       _error = null;
-      _position.value = Duration.zero;
       _duration = null;
     });
     try {
@@ -3155,7 +3155,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
         _videoMode &&
         !_videoPreviewUnavailable &&
         _videoReadyTrackKey == _videoTrackKey(track, onlineTrack);
-    final artwork = videoReadyForCurrentTrack
+    final artwork = _videoMode
         ? ClipRRect(
             borderRadius: BorderRadius.circular(20),
             child: RepaintBoundary(
@@ -3193,11 +3193,17 @@ class _LibraryScreenState extends State<LibraryScreen> {
       videoEnabled: onlineTrack?.directAudioUrl == null,
       onVideoTap: onlineTrack?.directAudioUrl != null || _videoLoading
           ? null
-          : () => unawaited(
-              _videoMode
-                  ? _switchToAudioMode()
-                  : _playVideoPreview(track, onlineTrack),
-            ),
+          : () async {
+              // Small delay to let audio stabilize if it just started
+              if (_playingOnlineTrack != null && _onlinePlaybackLoading) {
+                await Future.delayed(const Duration(milliseconds: 500));
+              }
+              unawaited(
+                _videoMode
+                    ? _switchToAudioMode()
+                    : _playVideoPreview(track, onlineTrack),
+              );
+            },
     );
   }
 
@@ -3247,14 +3253,14 @@ class _LibraryScreenState extends State<LibraryScreen> {
       if (!player.state.playing) {
         final started = player.stream.playing
             .firstWhere((playing) => playing)
-            .timeout(const Duration(seconds: 15));
+            .timeout(const Duration(seconds: 8));
         await player.play();
         await started;
       }
       if (player.state.buffering) {
         final ready = player.stream.buffering
             .firstWhere((buffering) => !buffering)
-            .timeout(const Duration(seconds: 25));
+            .timeout(const Duration(seconds: 15));
         if (player.state.buffering) await ready;
       }
       return player.state.position;
@@ -3264,7 +3270,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
     if (_player.processingState != ProcessingState.ready) {
       await _player.playerStateStream
           .firstWhere((state) => state.processingState == ProcessingState.ready)
-          .timeout(const Duration(seconds: 30));
+          .timeout(const Duration(seconds: 15));
     }
     if (!_player.playing) {
       final started = _player.playerStateStream
@@ -3272,7 +3278,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
             (state) =>
                 state.playing && state.processingState == ProcessingState.ready,
           )
-          .timeout(const Duration(seconds: 15));
+          .timeout(const Duration(seconds: 8));
       await _player.play();
       await started;
     }
@@ -3303,10 +3309,23 @@ class _LibraryScreenState extends State<LibraryScreen> {
     try {
       await _videoPlayer.stop();
       if (!mounted || requestId != _videoPlaybackRequestId) return;
-      // Give the song priority: a video request can arrive while its audio is
-      // still opening, so do not start a second stream or extractor yet.
-      await _waitForAudioReady();
+      // Don't block video startup waiting for audio. Start loading video immediately
+      // and sync in background. Only wait briefly for audio to be at least started.
+      final audioReadyFuture = _waitForAudioReady().timeout(
+        const Duration(seconds: 8),
+        onTimeout: () => _usingMediaKitForLocalAudio
+            ? _localAudioFallback.state.position
+            : _player.position,
+      );
       if (!mounted || requestId != _videoPlaybackRequestId) return;
+
+      // Check if audio is actually playing, if not give it a moment to start
+      final isAudioPlaying = _usingMediaKitForLocalAudio
+          ? _localAudioFallback.state.playing
+          : _player.playing;
+      if (!isAudioPlaying) {
+        await Future.delayed(const Duration(milliseconds: 300));
+      }
       String? videoId = onlineTrack?.videoId;
       if (videoId == null && track != null) {
         final resolved = await _resolveHomeChartTrack(
@@ -3317,7 +3336,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
             artworkUrl: '',
             rank: 0,
           ),
-        );
+        ).timeout(const Duration(seconds: 10));
         videoId = resolved?.videoId;
       }
       if (videoId == null ||
@@ -3406,7 +3425,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
         try {
           final alternatives = await _youtube.search
               .search(query)
-              .timeout(const Duration(seconds: 18));
+              .timeout(const Duration(seconds: 12));
           final seenIds = <String>{videoId};
           for (final candidate in alternatives) {
             if (!mounted || requestId != _videoPlaybackRequestId) return;
@@ -3422,7 +3441,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
                 (titleScore >= .9 && artistScore == 0);
             if (!confidentMatch ||
                 _chartVersionPenalty(candidate.title, title) > 0) {
-              if (seenIds.length >= 6) break;
+              if (seenIds.length >= 4) break;
               continue;
             }
             try {
@@ -3431,7 +3450,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
             } catch (error) {
               lastVideoError = error;
             }
-            if (seenIds.length >= 6) break;
+            if (seenIds.length >= 4) break;
           }
         } catch (error) {
           lastVideoError = error;
@@ -3451,6 +3470,11 @@ class _LibraryScreenState extends State<LibraryScreen> {
       // Mute before opening so a muxed stream can never leak its audio.
       await _videoPlayer.setVolume(0);
       if (!mounted || requestId != _videoPlaybackRequestId) return;
+      // Show loading state before opening to prevent black screen
+      setState(() {
+        _videoPreviewUnavailable = false;
+        _videoReadyTrackKey = requestedTrackKey;
+      });
       await _videoPlayer.open(
         Media(
           selectedVideoUri.toString(),
@@ -3464,45 +3488,46 @@ class _LibraryScreenState extends State<LibraryScreen> {
       );
       await _videoPlayer.setVolume(0);
       if (!mounted || requestId != _videoPlaybackRequestId) return;
-      // Load paused, seek to the running song, then start the video explicitly.
+      // Load paused, seek near the running song, then start the video explicitly.
       // This avoids relying on open() autoplay and never restarts the audio.
       try {
-        final audioPosition = await _waitForAudioReady();
+        final audioPosition = await audioReadyFuture;
         await _videoPlayer.seek(audioPosition);
+        // Start playing immediately to show video to user
+        await _videoPlayer.play();
+        // Show video as soon as it starts playing, don't wait for perfect sync
         final videoStarted = _videoPlayer.stream.playing
             .firstWhere((playing) => playing)
-            .timeout(const Duration(seconds: 12));
-        await _videoPlayer.play();
+            .timeout(const Duration(seconds: 6));
         await videoStarted;
         if (!mounted || requestId != _videoPlaybackRequestId) return;
-        if (_videoPlayer.state.buffering) {
-          final bufferingFinished = _videoPlayer.stream.buffering
-              .firstWhere((buffering) => !buffering)
-              .timeout(const Duration(seconds: 20));
-          if (_videoPlayer.state.buffering) await bufferingFinished;
+        // Now try to sync in background
+        try {
+          final firstVideoAdvance = _videoPlayer.stream.position
+              .firstWhere(
+                (position) =>
+                    position >= audioPosition + const Duration(milliseconds: 120),
+              )
+              .timeout(const Duration(seconds: 6));
+          await firstVideoAdvance;
+          _startVideoAudioSync();
+        } catch (syncError) {
+          debugPrint('Sync attempt failed, but video is playing: $syncError');
+          // Still start sync timer even if initial sync failed
+          _startVideoAudioSync();
         }
-        if (!mounted || requestId != _videoPlaybackRequestId) return;
-        // Account for the time video spent opening and buffering.
-        final latestAudioPosition = await _waitForAudioReady();
-        final firstNewFrame = _videoPlayer.stream.position
-            .firstWhere(
-              (position) =>
-                  position >=
-                  latestAudioPosition + const Duration(milliseconds: 120),
-            )
-            .timeout(const Duration(seconds: 8));
-        await _videoPlayer.seek(latestAudioPosition);
-        await firstNewFrame;
-        if (!mounted || requestId != _videoPlaybackRequestId) return;
-        setState(() {
-          _videoPreviewUnavailable = false;
-          _videoReadyTrackKey = requestedTrackKey;
-        });
-        _startVideoAudioSync();
       } catch (error, stackTrace) {
-        debugPrint('No se pudo sincronizar el audio extraído: $error');
+        debugPrint('No se pudo iniciar el video: $error');
         debugPrintStack(stackTrace: stackTrace);
-        _toast('El video inició, pero no se pudo sincronizar el audio.');
+        // Even if play fails, show video if it's loaded
+        if ((_videoPlayer.state.width ?? 0) > 0 && (_videoPlayer.state.height ?? 0) > 0) {
+          _startVideoAudioSync();
+        } else {
+          setState(() {
+            _videoPreviewUnavailable = true;
+          });
+          _toast('No se pudo iniciar el video: $error');
+        }
       }
     } catch (error, stackTrace) {
       if (requestId != _videoPlaybackRequestId) return;
@@ -3511,6 +3536,13 @@ class _LibraryScreenState extends State<LibraryScreen> {
       if (_videoMode) {
         _videoAudioSyncTimer?.cancel();
         await _videoPlayer.stop();
+        // Switch back to audio mode if video completely failed
+        if (mounted) {
+          setState(() {
+            _videoMode = false;
+            _videoPreviewUnavailable = true;
+          });
+        }
       }
       if (mounted) {
         _toast('No se pudo iniciar el video: $error');

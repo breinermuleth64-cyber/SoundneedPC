@@ -333,63 +333,43 @@ class _MiniPlayerState extends State<MiniPlayer> {
           initialData: widget.initialPlaying,
           builder: (context, snapshot) {
             final playing = snapshot.data ?? false;
-            final totalMs = widget.duration?.inMilliseconds ?? 0;
-
-            final progress = totalMs <= 0
-                ? 0.0
-                : (widget.position.inMilliseconds / totalMs).clamp(0.0, 1.0);
 
             return SizedBox(
-              width: 40,
-              height: 40,
-              child: Stack(
-                alignment: Alignment.center,
-                children: [
-                  SizedBox(
-                    width: 39,
-                    height: 39,
-                    child: CircularProgressIndicator(
-                      value: progress,
-                      strokeWidth: 2,
-                      color: playButtonColor,
-                      backgroundColor: Colors.white.withValues(alpha: .13),
+              width: 36,
+              height: 36,
+              child: Material(
+                color: playButtonColor,
+                shape: const CircleBorder(),
+                child: InkWell(
+                  onTap: () => widget.onTogglePlayback(playing),
+                  customBorder: const CircleBorder(),
+                  child: SizedBox(
+                    width: 28,
+                    height: 28,
+                    child: Center(
+                      child: loading
+                          ? const SizedBox(
+                              width: 17,
+                              height: 17,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: Color(0xFF0B0B12),
+                              ),
+                            )
+                          : Icon(
+                              !hasTrack
+                                  ? CupertinoIcons.add
+                                  : playing
+                                  ? CupertinoIcons.pause_fill
+                                  : Icons.play_arrow_rounded,
+                              color: hasTrack
+                                  ? const Color(0xFF0B0B12)
+                                  : widget.accentColor,
+                              size: 24,
+                            ),
                     ),
                   ),
-                  Material(
-                    color: playButtonColor,
-                    shape: const CircleBorder(),
-                    child: InkWell(
-                      onTap: () => widget.onTogglePlayback(playing),
-                      customBorder: const CircleBorder(),
-                      child: SizedBox(
-                        width: 32,
-                        height: 32,
-                        child: Center(
-                          child: loading
-                              ? const SizedBox(
-                                  width: 17,
-                                  height: 17,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                    color: Color(0xFF0B0B12),
-                                  ),
-                                )
-                              : Icon(
-                                  !hasTrack
-                                      ? CupertinoIcons.add
-                                      : playing
-                                      ? CupertinoIcons.pause_fill
-                                      : Icons.play_arrow_rounded,
-                                  color: hasTrack
-                                      ? const Color(0xFF0B0B12)
-                                      : widget.accentColor,
-                                  size: 21,
-                                ),
-                        ),
-                      ),
-                    ),
-                  ),
-                ],
+                ),
               ),
             );
           },
@@ -415,7 +395,7 @@ class _MiniPlayerState extends State<MiniPlayer> {
     );
   }
 
-  Widget _buildProgressBar(Color mutedColor) {
+  Widget _buildProgressBar(Color mutedColor, Color accentColor) {
     final duration = widget.duration;
     final position = widget.position;
 
@@ -435,13 +415,15 @@ class _MiniPlayerState extends State<MiniPlayer> {
               color: mutedColor,
               fontSize: 9,
               fontFeatures: const [],
+              height: 1.0,
             ),
           ),
         ),
-        const SizedBox(width: 10),
+        const SizedBox(width: 8),
         Expanded(
           child: _ProgressTrack(
             progress: progress,
+            accentColor: accentColor,
             onSeek: widget.onSeek == null || duration == null
                 ? null
                 : (value) {
@@ -453,13 +435,17 @@ class _MiniPlayerState extends State<MiniPlayer> {
                   },
           ),
         ),
-        const SizedBox(width: 10),
+        const SizedBox(width: 8),
         SizedBox(
           width: 30,
           child: Text(
             widget.durationLabel,
             textAlign: TextAlign.left,
-            style: TextStyle(color: mutedColor, fontSize: 9),
+            style: TextStyle(
+              color: mutedColor,
+              fontSize: 9,
+              height: 1.0,
+            ),
           ),
         ),
       ],
@@ -680,7 +666,7 @@ class _MiniPlayerState extends State<MiniPlayer> {
                         left: constraints.maxWidth * .10,
                         right: constraints.maxWidth * .10,
                         bottom: 6,
-                        child: _buildProgressBar(mutedColor),
+                        child: _buildProgressBar(mutedColor, accentColor),
                       ),
                   ],
                 );
@@ -702,37 +688,57 @@ class _MiniPlayerState extends State<MiniPlayer> {
   }
 }
 
-class _ProgressTrack extends StatelessWidget {
-  const _ProgressTrack({required this.progress, required this.onSeek});
+class _ProgressTrack extends StatefulWidget {
+  const _ProgressTrack({
+    required this.progress,
+    required this.accentColor,
+    required this.onSeek,
+  });
 
   final double progress;
+  final Color accentColor;
   final ValueChanged<double>? onSeek;
 
   @override
+  State<_ProgressTrack> createState() => _ProgressTrackState();
+}
+
+class _ProgressTrackState extends State<_ProgressTrack> {
+  bool _isHovered = false;
+
+  void update(Offset localPosition, double width) {
+    if (widget.onSeek == null || width <= 0) return;
+
+    widget.onSeek!((localPosition.dx / width).clamp(0.0, 1.0));
+  }
+
+  @override
   Widget build(BuildContext context) {
-    void update(Offset localPosition, double width) {
-      if (onSeek == null || width <= 0) return;
-
-      onSeek!((localPosition.dx / width).clamp(0.0, 1.0));
-    }
-
     return LayoutBuilder(
       builder: (context, constraints) {
-        return GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          onTapDown: onSeek == null
-              ? null
-              : (details) =>
-                    update(details.localPosition, constraints.maxWidth),
-          onHorizontalDragUpdate: onSeek == null
-              ? null
-              : (details) =>
-                    update(details.localPosition, constraints.maxWidth),
-          child: SizedBox(
-            height: 16,
-            child: CustomPaint(
-              painter: _ProgressTrackPainter(progress),
-              child: const SizedBox.expand(),
+        return MouseRegion(
+          onEnter: (_) => setState(() => _isHovered = true),
+          onExit: (_) => setState(() => _isHovered = false),
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTapDown: widget.onSeek == null
+                ? null
+                : (details) =>
+                      update(details.localPosition, constraints.maxWidth),
+            onHorizontalDragUpdate: widget.onSeek == null
+                ? null
+                : (details) =>
+                      update(details.localPosition, constraints.maxWidth),
+            child: SizedBox(
+              height: 12,
+              child: CustomPaint(
+                painter: _ProgressTrackPainter(
+                  widget.progress,
+                  _isHovered,
+                  widget.accentColor,
+                ),
+                child: const SizedBox.expand(),
+              ),
             ),
           ),
         );
@@ -742,22 +748,24 @@ class _ProgressTrack extends StatelessWidget {
 }
 
 class _ProgressTrackPainter extends CustomPainter {
-  const _ProgressTrackPainter(this.progress);
+  const _ProgressTrackPainter(this.progress, this.isHovered, this.accentColor);
 
   final double progress;
+  final bool isHovered;
+  final Color accentColor;
 
   @override
   void paint(Canvas canvas, Size size) {
     final centerY = size.height / 2;
 
     final track = Paint()
-      ..color = const Color(0xFF9292A5).withValues(alpha: .32)
-      ..strokeWidth = 5
+      ..color = Colors.white.withValues(alpha: .5)
+      ..strokeWidth = 4
       ..strokeCap = StrokeCap.round;
 
     final active = Paint()
-      ..color = const Color(0xFF83E8FF)
-      ..strokeWidth = 5
+      ..color = isHovered ? accentColor : Colors.white
+      ..strokeWidth = 4
       ..strokeCap = StrokeCap.round;
 
     canvas.drawLine(Offset(0, centerY), Offset(size.width, centerY), track);
@@ -766,16 +774,21 @@ class _ProgressTrackPainter extends CustomPainter {
 
     canvas.drawLine(Offset(0, centerY), Offset(activeX, centerY), active);
 
-    canvas.drawCircle(
-      Offset(activeX, centerY),
-      5,
-      active..style = PaintingStyle.fill,
-    );
+    // Only show thumb when hovered
+    if (isHovered) {
+      canvas.drawCircle(
+        Offset(activeX, centerY),
+        5,
+        active..style = PaintingStyle.fill,
+      );
+    }
   }
 
   @override
   bool shouldRepaint(covariant _ProgressTrackPainter oldDelegate) {
-    return oldDelegate.progress != progress;
+    return oldDelegate.progress != progress ||
+        oldDelegate.isHovered != isHovered ||
+        oldDelegate.accentColor != accentColor;
   }
 }
 
