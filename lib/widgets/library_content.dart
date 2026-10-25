@@ -7,6 +7,11 @@ class LibraryPageConfig {
     required this.title,
     required this.trackCount,
     required this.onCreatePlaylist,
+    required this.playlistNames,
+    required this.playlistCounts,
+    required this.onOpenPlaylist,
+    required this.onRenamePlaylist,
+    required this.onDeletePlaylist,
     required this.body,
     required this.error,
     required this.onDismissError,
@@ -19,6 +24,11 @@ class LibraryPageConfig {
   final String title;
   final int trackCount;
   final VoidCallback onCreatePlaylist;
+  final List<String> playlistNames;
+  final Map<String, int> playlistCounts;
+  final ValueChanged<String> onOpenPlaylist;
+  final ValueChanged<String> onRenamePlaylist;
+  final ValueChanged<String> onDeletePlaylist;
   final Widget body;
   final String? error;
   final VoidCallback onDismissError;

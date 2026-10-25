@@ -28,7 +28,6 @@ class SoundNeedSidebar extends StatelessWidget {
   static const Color _background = Color(0xFF0B0B0E);
   static const Color _surface = Colors.transparent;
   static const Color _border = Color(0xFF29292F);
-  static const Color _primaryText = Color(0xFFF5F5F7);
 
   @override
   Widget build(BuildContext context) {
@@ -61,13 +60,9 @@ class SoundNeedSidebar extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                _buildBrand(),
-                const SizedBox(height: 30),
-
                 _buildSectionLabel('BIBLIOTECA'),
                 const SizedBox(height: 9),
 
-                _navItem(context, CupertinoIcons.house, 'Inicio'),
                 _navItem(context, CupertinoIcons.music_note_list, 'Tu música'),
                 _navItem(context, CupertinoIcons.heart, 'Favoritos'),
 
@@ -106,55 +101,6 @@ class SoundNeedSidebar extends StatelessWidget {
             ),
           ),
         ),
-      ),
-    );
-  }
-
-  Widget _buildBrand() {
-    return Padding(
-      padding: EdgeInsets.symmetric(horizontal: compact ? 0 : 3),
-      child: Row(
-        mainAxisAlignment: compact
-            ? MainAxisAlignment.center
-            : MainAxisAlignment.start,
-        children: [
-          Container(
-            width: 39,
-            height: 39,
-            decoration: BoxDecoration(
-              color: accentColor,
-              shape: BoxShape.circle,
-              boxShadow: [
-                BoxShadow(
-                  color: accentColor.withValues(alpha: 0.17),
-                  blurRadius: 16,
-                  spreadRadius: 1,
-                ),
-              ],
-            ),
-            child: const Icon(
-              Icons.graphic_eq_rounded,
-              color: Color(0xFF0B0B0E),
-              size: 23,
-            ),
-          ),
-          if (!compact) ...[
-            const SizedBox(width: 11),
-            const Expanded(
-              child: Text(
-                'SoundNeed',
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  color: _primaryText,
-                  fontSize: 19,
-                  fontWeight: FontWeight.w700,
-                  letterSpacing: -0.7,
-                ),
-              ),
-            ),
-          ],
-        ],
       ),
     );
   }

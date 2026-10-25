@@ -3,6 +3,7 @@ package com.soundneed.extractor;
 import org.schabi.newpipe.extractor.NewPipe;
 import org.schabi.newpipe.extractor.stream.AudioStream;
 import org.schabi.newpipe.extractor.stream.StreamExtractor;
+import org.schabi.newpipe.extractor.stream.VideoStream;
 
 import java.util.Comparator;
 import java.util.List;
@@ -12,7 +13,8 @@ public final class Main {
     private Main() {}
 
     public static void main(String[] args) {
-        if (args.length != 1 || !args[0].matches("[A-Za-z0-9_-]{11}")) {
+        final boolean videoMode = args.length == 2 && "video".equals(args[1]);
+        if ((args.length != 1 && !videoMode) || !args[0].matches("[A-Za-z0-9_-]{11}")) {
             System.err.println("INVALID_VIDEO_ID: se esperaba un ID de YouTube de 11 caracteres");
             System.exit(2);
             return;
@@ -24,6 +26,31 @@ public final class Main {
             final StreamExtractor extractor = NewPipe.getService("YouTube")
                     .getStreamExtractor("https://www.youtube.com/watch?v=" + videoId);
             extractor.fetchPage();
+
+            if (videoMode) {
+                final List<VideoStream> streams = extractor.getVideoStreams().stream()
+                        .filter(VideoStream::isUrl)
+                        .filter(stream -> stream.getContent() != null && !stream.getContent().isBlank())
+                        .toList();
+                final List<VideoStream> efficientStreams = streams.stream()
+                        .filter(stream -> stream.getHeight() > 0 && stream.getHeight() <= 480)
+                        .toList();
+                final VideoStream selected = (efficientStreams.isEmpty() ? streams : efficientStreams)
+                        .stream()
+                        .min(Comparator.comparingInt(stream -> stream.getHeight() > 0
+                                ? Math.abs(stream.getHeight() - 480)
+                                : Integer.MAX_VALUE))
+                        .orElseThrow(() -> new IllegalStateException(
+                                "NewPipe no devolvió streams de video directos"));
+                final String url = selected.getContent();
+                if (!url.startsWith("https://") && !url.startsWith("http://")) {
+                    throw new IllegalStateException("NewPipe devolvió una URL de video inválida");
+                }
+                // Stdout is a small line protocol consumed by Dart. Never log the signed URL.
+                System.out.println(url);
+                System.out.println(selected.getHeight());
+                return;
+            }
 
             final List<AudioStream> streams = extractor.getAudioStreams().stream()
                     .filter(AudioStream::isUrl)
