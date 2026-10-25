@@ -2157,47 +2157,37 @@ class _LibraryScreenState extends State<LibraryScreen> {
               const Positioned.fill(child: ColoredBox(color: _bg)),
               Positioned.fill(
                 child: _videoMode
-                    ? (!videoReadyForCurrentTrack
-                          ? Stack(
-                              fit: StackFit.expand,
-                              children: [
-                                AmbientAlbumBackground(artwork: ambientArtwork),
-                                const DecoratedBox(
-                                  decoration: _videoBackdropShade,
-                                ),
-                              ],
-                            )
-                          : RepaintBoundary(
-                              child: Stack(
-                                fit: StackFit.expand,
-                                children: [
-                                  FittedBox(
+                    ? RepaintBoundary(
+                        child: Stack(
+                          fit: StackFit.expand,
+                          children: [
+                            FittedBox(
+                              fit: BoxFit.cover,
+                              clipBehavior: Clip.hardEdge,
+                              child: SizedBox(
+                                // Blur at a smaller resolution, then scale the
+                                // softened video to fill the desktop backdrop.
+                                width: 640,
+                                height: 360,
+                                child: ImageFiltered(
+                                  imageFilter: ui.ImageFilter.blur(
+                                    sigmaX: 12,
+                                    sigmaY: 12,
+                                  ),
+                                  child: media_video.Video(
+                                    controller: _videoController,
                                     fit: BoxFit.cover,
-                                    clipBehavior: Clip.hardEdge,
-                                    child: SizedBox(
-                                      // Blur at a smaller resolution, then scale the
-                                      // softened video to fill the desktop backdrop.
-                                      width: 640,
-                                      height: 360,
-                                      child: ImageFiltered(
-                                        imageFilter: ui.ImageFilter.blur(
-                                          sigmaX: 12,
-                                          sigmaY: 12,
-                                        ),
-                                        child: media_video.Video(
-                                          controller: _videoController,
-                                          fit: BoxFit.cover,
-                                          controls: media_video.NoVideoControls,
-                                        ),
-                                      ),
-                                    ),
+                                    controls: media_video.NoVideoControls,
                                   ),
-                                  const DecoratedBox(
-                                    decoration: _videoBackdropShade,
-                                  ),
-                                ],
+                                ),
                               ),
-                            ))
+                            ),
+                            const DecoratedBox(
+                              decoration: _videoBackdropShade,
+                            ),
+                          ],
+                        ),
+                      )
                     : Align(
                         alignment: Alignment.topCenter,
                         child: SizedBox(
