@@ -30,8 +30,10 @@ import 'widgets/mini_player.dart';
 import 'widgets/now_playing_panel.dart';
 import 'widgets/ambient_album_background.dart';
 import 'widgets/online_search_results.dart';
+import 'services/artist_song_discovery_service.dart';
 import 'services/home_discovery_service.dart';
 import 'services/listening_history_service.dart';
+import 'services/playlist_library_service.dart';
 import 'widgets/soundneed_sidebar.dart';
 import 'widgets/soundneed_top_bar.dart';
 
@@ -243,7 +245,8 @@ class _LibraryScreenState extends State<LibraryScreen> {
   final TextEditingController _search = TextEditingController();
   final List<Track> _tracks = [];
   final Set<String> _favorites = {};
-  final Map<String, List<String>> _playlists = {};
+  final _playlistLibrary = PlaylistLibraryService.instance;
+  Map<String, List<String>> get _playlists => _playlistLibrary.playlists;
   final List<String> _folders = [];
   final List<String> _queue = [];
   List<_OnlineTrack> _onlinePlaybackQueue = const [];
@@ -291,6 +294,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
   List<HomeChartArtist> _worldArtists = const [];
   List<String> _preferredArtists = const [];
   Set<String> _recentlyHeardTrackKeys = const {};
+  Map<String, int> _trackPlayCounts = const {};
   String? _resolvingChartKey;
   final ValueNotifier<Duration> _position = ValueNotifier(Duration.zero);
   Duration? _duration;
@@ -386,13 +390,9 @@ class _LibraryScreenState extends State<LibraryScreen> {
       }
       _favorites.addAll(prefs.getStringList('favorites.v1') ?? []);
       _folders.addAll(prefs.getStringList('folders.v1') ?? []);
-      final rawPlaylists = prefs.getString('playlists.v1');
-      if (rawPlaylists != null) {
-        final decoded = jsonDecode(rawPlaylists) as Map<String, dynamic>;
-        decoded.forEach(
-          (name, paths) => _playlists[name] = List<String>.from(paths as List),
-        );
-      }
+      _playlistLibrary.restore(
+        prefs.getString(PlaylistLibraryService.storageKey),
+      );
       final lastPath = prefs.getString('lastTrack.v1');
       if (lastPath != null) {
         final index = _tracks.indexWhere((track) => track.path == lastPath);
@@ -423,21 +423,14 @@ class _LibraryScreenState extends State<LibraryScreen> {
     if (gone.isEmpty) return;
     _tracks.removeWhere((track) => gone.contains(track.path));
     _favorites.removeAll(gone);
-    _playlists.updateAll(
-      (_, paths) => paths.where((path) => !gone.contains(path)).toList(),
-    );
+    await _playlistLibrary.removeMissingTracks(gone);
     _folders.removeWhere((path) => !Directory(path).existsSync());
     await _saveLibrary();
     final prefs = await SharedPreferences.getInstance();
     await prefs.setStringList('favorites.v1', _favorites.toList());
     await prefs.setStringList('folders.v1', _folders);
-    await _savePlaylists();
   }
 
-  Future<void> _savePlaylists() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('playlists.v1', jsonEncode(_playlists));
-  }
 
   Future<void> _importFiles() async {
     final files = await openFiles(
@@ -742,6 +735,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
     setState(() {
       _preferredArtists = profile.preferredArtists;
       _recentlyHeardTrackKeys = profile.recentTrackKeys;
+      _trackPlayCounts = profile.trackPlayCounts;
     });
   }
 
@@ -754,6 +748,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
     setState(() {
       _preferredArtists = profile.preferredArtists;
       _recentlyHeardTrackKeys = profile.recentTrackKeys;
+      _trackPlayCounts = profile.trackPlayCounts;
     });
   }
 
@@ -825,6 +820,26 @@ class _LibraryScreenState extends State<LibraryScreen> {
     }
   }
 
+  Future<void> _playArtistDiscoveryTrack(
+    ArtistSongResult track,
+    List<ArtistSongResult> songs,
+  ) async {
+    final queue = songs
+        .map(
+          (song) => _OnlineTrack(
+            videoId: song.videoId,
+            title: song.title,
+            artist: song.artist,
+            thumbnail: song.artworkUrl,
+            durationSeconds: song.durationSeconds,
+          ),
+        )
+        .toList(growable: false);
+    final index = queue.indexWhere((song) => song.videoId == track.videoId);
+    if (index < 0) return;
+    await _playOnlineTrack(queue[index], queue: queue, queueIndex: index);
+  }
+
   Future<void> _toggleFavorite(Track track) async {
     if (!_favorites.add(track.path)) _favorites.remove(track.path);
     final prefs = await SharedPreferences.getInstance();
@@ -860,14 +875,10 @@ class _LibraryScreenState extends State<LibraryScreen> {
     );
     controller.dispose();
     if (name == null || name.isEmpty || !mounted) return;
-    if (_playlists.keys.any(
-      (existing) => existing.toLowerCase() == name.toLowerCase(),
-    )) {
+    if (!await _playlistLibrary.create(name)) {
       _toast('Ya existe una playlist con ese nombre.');
       return;
     }
-    _playlists[name] = [];
-    await _savePlaylists();
     setState(() {
       if (sectionBeforeDialog == 'Playlists') {
         _section = 'Playlists';
@@ -906,24 +917,11 @@ class _LibraryScreenState extends State<LibraryScreen> {
     );
     controller.dispose();
     if (name == null || name.isEmpty || name == currentName || !mounted) return;
-    final duplicate = _playlists.keys.any(
-      (existing) =>
-          existing.toLowerCase() == name.toLowerCase() &&
-          existing != currentName,
-    );
-    if (duplicate) {
+    if (!await _playlistLibrary.rename(currentName, name)) {
       _toast('Ya existe una playlist con ese nombre.');
       return;
     }
-    final renamed = <String, List<String>>{};
-    for (final entry in _playlists.entries) {
-      renamed[entry.key == currentName ? name : entry.key] = entry.value;
-    }
-    _playlists
-      ..clear()
-      ..addAll(renamed);
     if (_playlistView == currentName) _playlistView = name;
-    await _savePlaylists();
     if (mounted) setState(() {});
   }
 
@@ -952,12 +950,11 @@ class _LibraryScreenState extends State<LibraryScreen> {
       ),
     );
     if (confirmed != true || !mounted) return;
-    _playlists.remove(name);
+    await _playlistLibrary.delete(name);
     if (_playlistView == name) {
       _playlistView = null;
       _section = 'Playlists';
     }
-    await _savePlaylists();
     if (mounted) setState(() {});
   }
 
@@ -971,8 +968,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
     String playlist,
     String trackPath,
   ) async {
-    _playlists[playlist]?.remove(trackPath);
-    await _savePlaylists();
+    await _playlistLibrary.removeTrack(playlist, trackPath);
     if (mounted) {
       setState(() {});
       _toast('Canción quitada de $playlist.');
@@ -980,15 +976,11 @@ class _LibraryScreenState extends State<LibraryScreen> {
   }
 
   Future<void> _addTracksToPlaylist(String playlist, List<Track> tracks) async {
-    final paths = _playlists[playlist];
-    if (paths == null || tracks.isEmpty) return;
-    var added = 0;
-    for (final track in tracks) {
-      if (paths.contains(track.path)) continue;
-      paths.add(track.path);
-      added++;
-    }
-    await _savePlaylists();
+    if (!_playlists.containsKey(playlist) || tracks.isEmpty) return;
+    final added = await _playlistLibrary.addTracks(
+      playlist,
+      tracks.map((track) => track.path),
+    );
     if (mounted) {
       setState(() {});
       _toast(
@@ -1020,12 +1012,10 @@ class _LibraryScreenState extends State<LibraryScreen> {
       ),
     );
     if (name == null) return;
-    final paths = _playlists[name]!;
-    if (!paths.contains(track.path)) paths.add(track.path);
-    await _savePlaylists();
+    final added = await _playlistLibrary.addTracks(name, [track.path]);
     if (mounted) {
       setState(() {});
-      _toast('Añadida a $name.');
+      _toast(added == 0 ? 'La canción ya está en $name.' : 'Añadida a $name.');
     }
   }
 
@@ -2510,8 +2500,10 @@ class _LibraryScreenState extends State<LibraryScreen> {
         trendingTracks: _worldTop,
         preferredArtists: _preferredArtists,
         recentlyHeardTrackKeys: _recentlyHeardTrackKeys,
+        trackPlayCounts: _trackPlayCounts,
         onPlayTracks: _playCollection,
         onPlayArtistStation: _playArtistStation,
+        onPlayArtistSong: _playArtistDiscoveryTrack,
         onPlayChartTrack: (track, queue) async {
           await _playHomeChartTrack(track, chart: queue);
         },
@@ -3496,7 +3488,8 @@ class _LibraryScreenState extends State<LibraryScreen> {
           final firstVideoAdvance = _videoPlayer.stream.position
               .firstWhere(
                 (position) =>
-                    position >= audioPosition + const Duration(milliseconds: 120),
+                    position >=
+                    audioPosition + const Duration(milliseconds: 120),
               )
               .timeout(const Duration(seconds: 6));
           await firstVideoAdvance;
@@ -3510,7 +3503,8 @@ class _LibraryScreenState extends State<LibraryScreen> {
         debugPrint('No se pudo iniciar el video: $error');
         debugPrintStack(stackTrace: stackTrace);
         // Even if play fails, show video if it's loaded
-        if ((_videoPlayer.state.width ?? 0) > 0 && (_videoPlayer.state.height ?? 0) > 0) {
+        if ((_videoPlayer.state.width ?? 0) > 0 &&
+            (_videoPlayer.state.height ?? 0) > 0) {
           _startVideoAudioSync();
         } else {
           setState(() {

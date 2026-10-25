@@ -6,10 +6,12 @@ class ListeningHistoryProfile {
   const ListeningHistoryProfile({
     required this.preferredArtists,
     required this.recentTrackKeys,
+    required this.trackPlayCounts,
   });
 
   final List<String> preferredArtists;
   final Set<String> recentTrackKeys;
+  final Map<String, int> trackPlayCounts;
 }
 
 class ListeningHistoryService {
@@ -86,20 +88,28 @@ class ListeningHistoryService {
     final scores = <String, int>{};
     final names = <String, String>{};
     final recentTrackKeys = <String>{};
+    final trackScores = <String, int>{};
     for (final entry in records) {
       final artistKey = _normalize(entry.artist);
       if (artistKey.isEmpty) continue;
       names.putIfAbsent(artistKey, () => entry.artist);
       scores.update(artistKey, (score) => score + 1, ifAbsent: () => 1);
+      final trackKey = _trackKey(entry.title, entry.artist);
+      trackScores.update(trackKey, (score) => score + 1, ifAbsent: () => 1);
       if (!entry.playedAt.isBefore(cutoff)) {
-        recentTrackKeys.add(_trackKey(entry.title, entry.artist));
+        recentTrackKeys.add(trackKey);
       }
     }
     final artists = scores.keys.toList()
       ..sort((a, b) => scores[b]!.compareTo(scores[a]!));
+    final rankedTrackKeys = trackScores.keys.toList()
+      ..sort((a, b) => trackScores[b]!.compareTo(trackScores[a]!));
     return ListeningHistoryProfile(
       preferredArtists: List.unmodifiable(artists.map((key) => names[key]!)),
       recentTrackKeys: Set.unmodifiable(recentTrackKeys),
+      trackPlayCounts: Map.unmodifiable({
+        for (final key in rankedTrackKeys) key: trackScores[key]!,
+      }),
     );
   }
 
@@ -117,6 +127,21 @@ class ListeningHistoryService {
       .replaceAll('ñ', 'n')
       .replaceAll(RegExp(r'[^a-z0-9]+'), ' ')
       .trim();
+}
+
+String listeningTrackKey(String title, String artist) {
+  String normalize(String value) => value
+      .toLowerCase()
+      .replaceAll('á', 'a')
+      .replaceAll('é', 'e')
+      .replaceAll('í', 'i')
+      .replaceAll('ó', 'o')
+      .replaceAll('ú', 'u')
+      .replaceAll('ü', 'u')
+      .replaceAll('ñ', 'n')
+      .replaceAll(RegExp(r'[^a-z0-9]+'), ' ')
+      .trim();
+  return '${normalize(title)}|${normalize(artist)}';
 }
 
 class _ListeningEntry {

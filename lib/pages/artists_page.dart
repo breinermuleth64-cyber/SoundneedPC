@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../models/track.dart';
+import '../services/artist_song_discovery_service.dart';
 import '../services/home_discovery_service.dart';
 import '../widgets/library_content.dart';
 import '../widgets/media_collection_browser.dart';
@@ -23,8 +24,10 @@ class ArtistsPage extends StatelessWidget {
     this.trendingTracks = const [],
     this.preferredArtists = const [],
     this.recentlyHeardTrackKeys = const {},
+    this.trackPlayCounts = const {},
     this.onPlayArtistStation,
     this.onPlayChartTrack,
+    this.onPlayArtistSong,
     super.key,
   });
 
@@ -43,8 +46,11 @@ class ArtistsPage extends StatelessWidget {
   final List<HomeChartTrack> trendingTracks;
   final List<String> preferredArtists;
   final Set<String> recentlyHeardTrackKeys;
+  final Map<String, int> trackPlayCounts;
   final ValueChanged<String>? onPlayArtistStation;
   final PlayChartTrack? onPlayChartTrack;
+  final Future<void> Function(ArtistSongResult, List<ArtistSongResult>)?
+  onPlayArtistSong;
 
   @override
   Widget build(BuildContext context) => MiddleContentPanel(
@@ -66,9 +72,11 @@ class ArtistsPage extends StatelessWidget {
             trendingTracks: trendingTracks,
             preferredArtists: preferredArtists,
             recentlyHeardTrackKeys: recentlyHeardTrackKeys,
+            trackPlayCounts: trackPlayCounts,
             onPlayTracks: onPlayTracks,
             onPlayArtistStation: onPlayArtistStation,
             onPlayChartTrack: onPlayChartTrack,
+            onPlayArtistSong: onPlayArtistSong,
           ),
   );
 }

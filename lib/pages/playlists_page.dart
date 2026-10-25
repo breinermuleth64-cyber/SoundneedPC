@@ -4,8 +4,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../models/track.dart';
+import '../services/playlist_search_service.dart';
 import '../widgets/library_content.dart';
 import '../widgets/middle_content_panel.dart';
+import '../widgets/playlist_track_picker.dart';
 
 typedef PlayPlaylistTracks = Future<void> Function(List<Track>, int, bool);
 typedef AddTracksToPlaylist = Future<void> Function(String, List<Track>);
@@ -46,14 +48,16 @@ class PlaylistsPage extends StatefulWidget {
 
 class _PlaylistsPageState extends State<PlaylistsPage> {
   bool _showLiked = false;
-  String _query = '', _sort = 'added';
+  String _query = '', _libraryQuery = '', _sort = 'added';
   final _search = TextEditingController();
+  final _librarySearch = TextEditingController();
   bool get _showPlaylist =>
       widget.config.playlistView != null &&
       widget.playlists.containsKey(widget.config.playlistView);
   @override
   void dispose() {
     _search.dispose();
+    _librarySearch.dispose();
     super.dispose();
   }
 
@@ -67,11 +71,60 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
 
   Widget _library() {
     final liked = _likedSongs();
+    final showLiked = PlaylistSearchService.matchesPlaylist(
+      'Me gusta',
+      liked,
+      _libraryQuery,
+    );
+    final visiblePlaylists = widget.playlists.entries
+        .where(
+          (entry) => PlaylistSearchService.matchesPlaylist(
+            entry.key,
+            _songs(entry.key),
+            _libraryQuery,
+          ),
+        )
+        .toList(growable: false);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         _libraryHero(widget.playlists.length + 1),
-        const SizedBox(height: 24),
+        const SizedBox(height: 18),
+        TextField(
+          controller: _librarySearch,
+          onChanged: (value) => setState(() => _libraryQuery = value),
+          style: const TextStyle(color: Colors.white, fontSize: 13),
+          decoration: InputDecoration(
+            hintText: 'Buscar playlist, canción o artista',
+            hintStyle: const TextStyle(color: _muted, fontSize: 12),
+            prefixIcon: const Icon(Icons.search_rounded, color: _cyan),
+            suffixIcon: _libraryQuery.isEmpty
+                ? null
+                : IconButton(
+                    tooltip: 'Limpiar búsqueda',
+                    onPressed: () {
+                      _librarySearch.clear();
+                      setState(() => _libraryQuery = '');
+                    },
+                    icon: const Icon(Icons.close_rounded, color: _muted),
+                  ),
+            filled: true,
+            fillColor: _panel,
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(16),
+              borderSide: const BorderSide(color: Color(0xFF2B2B3B)),
+            ),
+            enabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(16),
+              borderSide: const BorderSide(color: Color(0xFF2B2B3B)),
+            ),
+            focusedBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(16),
+              borderSide: const BorderSide(color: _cyan, width: 1.2),
+            ),
+          ),
+        ),
+        const SizedBox(height: 20),
         LayoutBuilder(
           builder: (context, box) {
             final columns = box.maxWidth >= 1060
@@ -85,23 +138,25 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
               spacing: gap,
               runSpacing: 22,
               children: [
-                SizedBox(
-                  width: width,
-                  child: _playlistCard(
-                    title: 'Me gusta',
-                    subtitle: _count(liked.length),
-                    songs: liked,
-                    liked: true,
-                    onTap: () => setState(() {
-                      _showLiked = true;
-                      _query = '';
-                    }),
-                    onPlay: liked.isEmpty
-                        ? null
-                        : () => widget.onPlayTracks(liked, 0, false),
+                if (showLiked)
+                  SizedBox(
+                    width: width,
+                    child: _playlistCard(
+                      title: 'Me gusta',
+                      subtitle: _count(liked.length),
+                      songs: liked,
+                      liked: true,
+                      onTap: () => setState(() {
+                        _showLiked = true;
+                        _query = '';
+                        _search.clear();
+                      }),
+                      onPlay: liked.isEmpty
+                          ? null
+                          : () => widget.onPlayTracks(liked, 0, false),
+                    ),
                   ),
-                ),
-                ...widget.playlists.entries.map((entry) {
+                ...visiblePlaylists.map((entry) {
                   final songs = _songs(entry.key);
                   return SizedBox(
                     width: width,
@@ -127,6 +182,10 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
                             child: Text('Compartir lista'),
                           ),
                           PopupMenuItem(
+                            value: 'copy',
+                            child: Text('Agregar a otra playlist'),
+                          ),
+                          PopupMenuItem(
                             value: 'delete',
                             child: Text('Eliminar playlist'),
                           ),
@@ -140,7 +199,12 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
             );
           },
         ),
-        if (widget.playlists.isEmpty) ...[
+        if (_libraryQuery.isNotEmpty && !showLiked && visiblePlaylists.isEmpty)
+          _empty(
+            'No encontramos coincidencias',
+            'Prueba con otro nombre, canción o artista.',
+          )
+        else if (_libraryQuery.isEmpty && widget.playlists.isEmpty) ...[
           const SizedBox(height: 22),
           _empty(
             'Tu próxima playlist empieza aquí',
@@ -149,8 +213,10 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
             onAction: widget.config.onCreatePlaylist,
           ),
         ],
-        const SizedBox(height: 24),
-        _surpriseMix(),
+        if (_libraryQuery.isEmpty) ...[
+          const SizedBox(height: 24),
+          _surpriseMix(),
+        ],
       ],
     );
   }
@@ -441,27 +507,8 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
       0,
       (sum, track) => sum + (track.durationMs ?? 0),
     );
-    final visible = [...songs];
-    if (_sort == 'title') {
-      visible.sort(
-        (a, b) => a.title.toLowerCase().compareTo(b.title.toLowerCase()),
-      );
-    }
-    if (_sort == 'artist') {
-      visible.sort(
-        (a, b) => a.artist.toLowerCase().compareTo(b.artist.toLowerCase()),
-      );
-    }
-    final filtered = _query.isEmpty
-        ? visible
-        : visible
-              .where(
-                (track) =>
-                    track.title.toLowerCase().contains(_query.toLowerCase()) ||
-                    track.artist.toLowerCase().contains(_query.toLowerCase()) ||
-                    track.album.toLowerCase().contains(_query.toLowerCase()),
-              )
-              .toList();
+    final visible = PlaylistSearchService.sortTracks(songs, _sort);
+    final filtered = PlaylistSearchService.filterTracks(visible, _query);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -488,6 +535,15 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
                 accent,
                 () => _share(title, songs),
               ),
+              if (!liked) ...[
+                const SizedBox(width: 8),
+                _option(
+                  Icons.playlist_add_rounded,
+                  'Agregar a otra',
+                  accent,
+                  () => _addCollectionToAnother(playlist!, songs),
+                ),
+              ],
               const SizedBox(width: 8),
               PopupMenuButton<String>(
                 tooltip: 'Ordenar canciones',
@@ -496,6 +552,7 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
                   PopupMenuItem(value: 'added', child: Text('Orden original')),
                   PopupMenuItem(value: 'title', child: Text('Por título')),
                   PopupMenuItem(value: 'artist', child: Text('Por artista')),
+                  PopupMenuItem(value: 'album', child: Text('Por álbum')),
                 ],
                 child: _option(
                   Icons.sort_rounded,
@@ -503,6 +560,8 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
                       ? 'Por título'
                       : _sort == 'artist'
                       ? 'Por artista'
+                      : _sort == 'album'
+                      ? 'Por álbum'
                       : 'Orden original',
                   accent,
                 ),
@@ -711,6 +770,10 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
               _search.clear();
             });
           } else {
+            setState(() {
+              _query = '';
+              _search.clear();
+            });
             widget.config.onOpenPlaylist('Playlists');
           }
         },
@@ -1061,6 +1124,8 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
       widget.config.onRenamePlaylist(name);
     } else if (action == 'share') {
       await _share(name, _songs(name));
+    } else if (action == 'copy') {
+      await _addCollectionToAnother(name, _songs(name));
     } else if (action == 'delete') {
       await _confirmDelete(name);
     }
@@ -1106,6 +1171,55 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
     }
   }
 
+  Future<void> _addCollectionToAnother(String source, List<Track> songs) async {
+    if (songs.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Esta playlist no tiene canciones para agregar.'),
+        ),
+      );
+      return;
+    }
+    final targets = widget.playlists.keys
+        .where((name) => name != source)
+        .toList(growable: false);
+    if (targets.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Crea otra playlist para copiar estas canciones.'),
+        ),
+      );
+      return;
+    }
+    final target = await showDialog<String>(
+      context: context,
+      builder: (context) => SimpleDialog(
+        backgroundColor: _panel,
+        title: const Text('Agregar a otra playlist'),
+        children: [
+          for (final name in targets)
+            SimpleDialogOption(
+              onPressed: () => Navigator.pop(context, name),
+              child: Row(
+                children: [
+                  const Icon(Icons.queue_music_rounded, color: _cyan, size: 19),
+                  const SizedBox(width: 10),
+                  Expanded(child: Text(name)),
+                  Text(
+                    '${_songs(name).length}',
+                    style: const TextStyle(color: _muted, fontSize: 11),
+                  ),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+    if (target != null) {
+      await widget.onAddTracksToPlaylist(target, songs);
+    }
+  }
+
   Future<void> _addSongs(String playlist) async {
     final already = (widget.playlists[playlist] ?? const <String>[]).toSet();
     final candidates = widget.tracks
@@ -1119,109 +1233,12 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
       );
       return;
     }
-    final selected = <String>{};
-    var query = '';
     final chosen = await showDialog<List<Track>>(
       context: context,
-      builder: (context) => StatefulBuilder(
-        builder: (context, update) {
-          final visible = candidates
-              .where(
-                (track) =>
-                    track.title.toLowerCase().contains(query.toLowerCase()) ||
-                    track.artist.toLowerCase().contains(query.toLowerCase()) ||
-                    track.album.toLowerCase().contains(query.toLowerCase()),
-              )
-              .toList(growable: false);
-          return AlertDialog(
-            backgroundColor: _panel,
-            title: Text('Agregar a $playlist'),
-            content: SizedBox(
-              width: 520,
-              height: 460,
-              child: Column(
-                children: [
-                  TextField(
-                    autofocus: true,
-                    onChanged: (value) => update(() => query = value.trim()),
-                    decoration: InputDecoration(
-                      hintText: 'Buscar en tu biblioteca',
-                      prefixIcon: const Icon(
-                        Icons.search_rounded,
-                        color: _cyan,
-                      ),
-                      filled: true,
-                      fillColor: _raised,
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(14),
-                        borderSide: BorderSide.none,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 10),
-                  Expanded(
-                    child: ListView.builder(
-                      itemCount: visible.length,
-                      itemBuilder: (context, i) {
-                        final track = visible[i],
-                            checked = selected.contains(visible[i].path);
-                        return CheckboxListTile(
-                          value: checked,
-                          activeColor: _cyan,
-                          checkColor: const Color(0xFF11111A),
-                          secondary: ClipRRect(
-                            borderRadius: BorderRadius.circular(7),
-                            child: SizedBox(
-                              width: 42,
-                              height: 42,
-                              child: _cover(track),
-                            ),
-                          ),
-                          title: Text(
-                            track.title,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                          subtitle: Text(
-                            track.artist,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(color: _muted, fontSize: 11),
-                          ),
-                          onChanged: (value) => update(() {
-                            if (value == true) {
-                              selected.add(track.path);
-                            } else {
-                              selected.remove(track.path);
-                            }
-                          }),
-                        );
-                      },
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context),
-                child: const Text('Cancelar'),
-              ),
-              FilledButton.icon(
-                onPressed: selected.isEmpty
-                    ? null
-                    : () => Navigator.pop(
-                        context,
-                        candidates
-                            .where((track) => selected.contains(track.path))
-                            .toList(),
-                      ),
-                icon: const Icon(Icons.playlist_add_rounded),
-                label: Text('Agregar ${selected.length}'),
-              ),
-            ],
-          );
-        },
+      builder: (_) => PlaylistTrackPicker(
+        playlistName: playlist,
+        tracks: candidates,
+        alreadyIncludedPaths: already,
       ),
     );
     if (chosen != null && chosen.isNotEmpty) {

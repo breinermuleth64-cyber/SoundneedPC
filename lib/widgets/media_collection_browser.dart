@@ -4,8 +4,10 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 
 import '../models/track.dart';
+import '../services/artist_song_discovery_service.dart';
 import '../services/artist_catalog_service.dart';
 import '../services/home_discovery_service.dart';
+import '../services/listening_history_service.dart';
 import 'ambient_album_background.dart';
 
 typedef PlayCollectionTracks = Future<void> Function(
@@ -34,8 +36,10 @@ class MediaCollectionBrowser extends StatefulWidget {
     this.trendingTracks = const [],
     this.preferredArtists = const [],
     this.recentlyHeardTrackKeys = const {},
+    this.trackPlayCounts = const {},
     this.onPlayArtistStation,
     this.onPlayChartTrack,
+    this.onPlayArtistSong,
     super.key,
   });
 
@@ -53,8 +57,11 @@ class MediaCollectionBrowser extends StatefulWidget {
   final List<HomeChartTrack> trendingTracks;
   final List<String> preferredArtists;
   final Set<String> recentlyHeardTrackKeys;
+  final Map<String, int> trackPlayCounts;
   final ValueChanged<String>? onPlayArtistStation;
   final PlayChartTrack? onPlayChartTrack;
+  final Future<void> Function(ArtistSongResult, List<ArtistSongResult>)?
+  onPlayArtistSong;
 
   @override
   State<MediaCollectionBrowser> createState() => _MediaCollectionBrowserState();
@@ -76,6 +83,12 @@ class _MediaCollectionBrowserState extends State<MediaCollectionBrowser> {
   int _artistSearchRequest = 0;
   bool _searchingArtists = false;
   List<ArtistCatalogEntry> _artistSearchResults = [];
+  String? _artistSearchError;
+  final _searchController = TextEditingController();
+  List<ArtistSongResult> _artistSongResults = [];
+  bool _loadingArtistSongs = false;
+  String? _artistSongsError;
+  int _artistSongRequest = 0;
   final Map<String, Future<ArtistCatalogEntry?>> _portraitFutures = {};
 
   bool get _isArtists => widget.showArtists;
@@ -83,6 +96,7 @@ class _MediaCollectionBrowserState extends State<MediaCollectionBrowser> {
   @override
   void dispose() {
     _artistSearchDebounce?.cancel();
+    _searchController.dispose();
     super.dispose();
   }
 
@@ -95,6 +109,7 @@ class _MediaCollectionBrowserState extends State<MediaCollectionBrowser> {
       setState(() {
         _artistSearchResults = [];
         _searchingArtists = false;
+        _artistSearchError = null;
       });
       return;
     }
@@ -102,15 +117,26 @@ class _MediaCollectionBrowserState extends State<MediaCollectionBrowser> {
     final request = ++_artistSearchRequest;
     setState(() => _searchingArtists = true);
     _artistSearchDebounce = Timer(const Duration(milliseconds: 450), () async {
-      final results = await ArtistCatalogService.instance.searchArtists(
-        query,
-        limit: 10,
-      );
-      if (!mounted || request != _artistSearchRequest) return;
-      setState(() {
-        _artistSearchResults = results;
-        _searchingArtists = false;
-      });
+      try {
+        final results = await ArtistCatalogService.instance.searchArtists(
+          query,
+          limit: 20,
+        );
+        if (!mounted || request != _artistSearchRequest) return;
+        setState(() {
+          _artistSearchResults = results;
+          _searchingArtists = false;
+          _artistSearchError = null;
+        });
+      } catch (_) {
+        if (!mounted || request != _artistSearchRequest) return;
+        setState(() {
+          _artistSearchResults = [];
+          _searchingArtists = false;
+          _artistSearchError =
+              'No se pudo buscar. Revisa tu conexión e inténtalo de nuevo.';
+        });
+      }
     });
   }
 
@@ -206,9 +232,18 @@ class _MediaCollectionBrowserState extends State<MediaCollectionBrowser> {
               .take(12)
               .toList(growable: false)
         : const <String>[];
+    final personalArtists = _isArtists
+        ? widget.preferredArtists
+              .where((name) => name.trim().isNotEmpty)
+              .where(
+                (name) => query.isEmpty || name.toLowerCase().contains(query),
+              )
+              .toList(growable: false)
+        : const <String>[];
     final discovery = _discoverySelection();
 
-    if (widget.tracks.isEmpty && (!_isArtists || featured.isEmpty)) {
+    if (widget.tracks.isEmpty &&
+        (!_isArtists || (featured.isEmpty && personalArtists.isEmpty))) {
       return _emptyLibrary();
     }
 
@@ -233,7 +268,7 @@ class _MediaCollectionBrowserState extends State<MediaCollectionBrowser> {
           else if (_artistSearchResults.isEmpty)
             _message(
               Icons.person_search_rounded,
-              'No encontramos artistas con ese nombre',
+              _artistSearchError ?? 'No encontramos artistas con ese nombre',
               'Prueba con otro nombre. También puedes explorar los artistas de tu biblioteca.',
             )
           else
@@ -278,6 +313,25 @@ class _MediaCollectionBrowserState extends State<MediaCollectionBrowser> {
           ],
           const SizedBox(height: 26),
         ],
+        if (_isArtists && query.isEmpty && personalArtists.isNotEmpty) ...[
+          _heading(
+            'Tus artistas más escuchados',
+            'Según tu actividad reciente',
+            personalArtists.length,
+          ),
+          const SizedBox(height: 13),
+          SizedBox(
+            height: 140,
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              itemCount: personalArtists.length,
+              separatorBuilder: (_, _) => const SizedBox(width: 12),
+              itemBuilder: (context, index) =>
+                  _personalArtist(personalArtists[index], index),
+            ),
+          ),
+          const SizedBox(height: 22),
+        ],
         _heading(
           _isArtists ? 'Artistas de tu biblioteca' : 'Álbumes de tu biblioteca',
           _isArtists
@@ -299,6 +353,7 @@ class _MediaCollectionBrowserState extends State<MediaCollectionBrowser> {
   }
 
   Widget _searchField() => TextField(
+    controller: _searchController,
     onChanged: _onSearchChanged,
     style: const TextStyle(color: Colors.white, fontSize: 14),
     decoration: InputDecoration(
@@ -309,7 +364,10 @@ class _MediaCollectionBrowserState extends State<MediaCollectionBrowser> {
           ? null
           : IconButton(
               tooltip: 'Limpiar búsqueda',
-              onPressed: () => setState(() => _query = ''),
+              onPressed: () {
+                _searchController.clear();
+                _onSearchChanged('');
+              },
               icon: const Icon(Icons.close_rounded, color: _muted, size: 18),
             ),
       filled: true,
@@ -438,6 +496,85 @@ class _MediaCollectionBrowserState extends State<MediaCollectionBrowser> {
                 Text(
                   rank < 0 ? 'En tendencia' : 'N.º ${rank + 1}',
                   style: const TextStyle(color: _cyan, fontSize: 9),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _personalArtist(String artist, int rank) {
+    final tracks = _artistGroupByName(artist)?.tracks ?? const <Track>[];
+    final plays = tracks.fold<int>(
+      0,
+      (total, track) =>
+          total +
+          (widget.trackPlayCounts[listeningTrackKey(
+                track.title,
+                track.artist,
+              )] ??
+              0),
+    );
+    return SizedBox(
+      width: 158,
+      child: Material(
+        color: _raised,
+        borderRadius: BorderRadius.circular(18),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: () => _openArtist(artist),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(12, 12, 12, 10),
+            child: Row(
+              children: [
+                ClipOval(
+                  child: SizedBox(
+                    width: 58,
+                    height: 58,
+                    child: _artistPortrait(
+                      artist,
+                      tracks.isEmpty ? null : tracks.first,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Text(
+                        '#${rank + 1}',
+                        style: const TextStyle(
+                          color: _cyan,
+                          fontSize: 9,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                      const SizedBox(height: 3),
+                      Text(
+                        artist,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      const SizedBox(height: 3),
+                      Text(
+                        plays > 0
+                            ? '$plays reproducciones'
+                            : '${tracks.length} canciones guardadas',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(color: _muted, fontSize: 9),
+                      ),
+                    ],
+                  ),
                 ),
               ],
             ),
@@ -953,10 +1090,29 @@ class _MediaCollectionBrowserState extends State<MediaCollectionBrowser> {
   Widget _artistDetail(_MediaGroup group) {
     final albums = _groupsForArtist(group.title);
     final hasTracks = group.tracks.isNotEmpty;
+    final orderedTracks = [...group.tracks]
+      ..sort((a, b) {
+        final aPlays =
+            widget.trackPlayCounts[listeningTrackKey(a.title, a.artist)] ?? 0;
+        final bPlays =
+            widget.trackPlayCounts[listeningTrackKey(b.title, b.artist)] ?? 0;
+        final byPlays = bPlays.compareTo(aPlays);
+        return byPlays != 0
+            ? byPlays
+            : a.title.toLowerCase().compareTo(b.title.toLowerCase());
+      });
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        _detailBack(group.title, 'PERFIL DEL ARTISTA'),
+        _detailBack(
+          group.title,
+          'PERFIL DEL ARTISTA',
+          onRefresh: _loadingArtistSongs
+              ? null
+              : () => unawaited(
+                  _loadArtistSongs(group.title, forceRefresh: true),
+                ),
+        ),
         const SizedBox(height: 14),
         _hero(
           title: group.title,
@@ -1011,6 +1167,29 @@ class _MediaCollectionBrowserState extends State<MediaCollectionBrowser> {
             'Puedes escuchar su radio o disfrutar las canciones de tu biblioteca.',
           ),
         ],
+        const SizedBox(height: 23),
+        _heading(
+          'Descubre en SoundNeed',
+          'Canciones de ${group.title}',
+          _artistSongResults.length,
+        ),
+        const SizedBox(height: 10),
+        if (_loadingArtistSongs)
+          const LinearProgressIndicator(
+            minHeight: 2,
+            backgroundColor: _surface,
+            valueColor: AlwaysStoppedAnimation<Color>(_cyan),
+          )
+        else if (_artistSongResults.isNotEmpty)
+          ..._artistSongResults.indexed.map(
+            (entry) => _artistSongRow(entry.$2, entry.$1, _artistSongResults),
+          )
+        else
+          _message(
+            Icons.search_rounded,
+            _artistSongsError ?? 'Desliza para volver a buscar canciones.',
+            'Prueba de nuevo con una conexión a internet.',
+          ),
         if (albums.isNotEmpty) ...[
           const SizedBox(height: 24),
           _heading(
@@ -1045,10 +1224,83 @@ class _MediaCollectionBrowserState extends State<MediaCollectionBrowser> {
         if (!hasTracks)
           _emptyArtist(group.title)
         else
-          ...group.tracks.indexed.map(
-            (entry) => _trackRow(group.tracks, entry.$2, entry.$1),
+          ...orderedTracks.indexed.map(
+            (entry) => _trackRow(orderedTracks, entry.$2, entry.$1),
           ),
       ],
+    );
+  }
+
+  Widget _artistSongRow(
+    ArtistSongResult song,
+    int index,
+    List<ArtistSongResult> queue,
+  ) {
+    final play = widget.onPlayArtistSong;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Material(
+        color: _surface,
+        borderRadius: BorderRadius.circular(15),
+        child: ListTile(
+          contentPadding: const EdgeInsets.symmetric(horizontal: 11),
+          leading: SizedBox(
+            width: 48,
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(
+                  '${index + 1}'.padLeft(2, '0'),
+                  style: const TextStyle(
+                    color: _cyan,
+                    fontSize: 10,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(8),
+                  child: Image.network(
+                    song.artworkUrl,
+                    width: 38,
+                    height: 38,
+                    fit: BoxFit.cover,
+                    errorBuilder: (_, _, _) => const ColoredBox(
+                      color: _raised,
+                      child: SizedBox(
+                        width: 38,
+                        height: 38,
+                        child: Icon(Icons.music_note_rounded, color: _muted),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          title: Text(
+            song.title,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+          ),
+          subtitle: Text(
+            song.artist,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(color: _muted, fontSize: 11),
+          ),
+          trailing: IconButton(
+            tooltip: 'Reproducir canción',
+            onPressed: play == null ? null : () => unawaited(play(song, queue)),
+            icon: const Icon(
+              Icons.play_circle_fill_rounded,
+              color: _cyan,
+              size: 27,
+            ),
+          ),
+          onTap: play == null ? null : () => unawaited(play(song, queue)),
+        ),
+      ),
     );
   }
 
@@ -1092,52 +1344,59 @@ class _MediaCollectionBrowserState extends State<MediaCollectionBrowser> {
     ],
   );
 
-  Widget _detailBack(String title, String eyebrow) => Row(
-    children: [
-      IconButton(
-        tooltip: 'Volver a la colección',
-        onPressed: () => setState(() {
-          if (_showingArtistAlbum) {
-            _selectedKey = _returnArtistKey;
-            _selectedName = _returnArtistName;
-            _showingArtistAlbum = false;
-          } else {
-            _selectedKey = null;
-            _selectedName = null;
-          }
-        }),
-        icon: const Icon(Icons.arrow_back_rounded, color: _cyan),
-      ),
-      const SizedBox(width: 7),
-      Expanded(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              eyebrow,
-              style: const TextStyle(
-                color: _cyan,
-                fontSize: 9,
-                letterSpacing: 1.5,
-                fontWeight: FontWeight.w700,
-              ),
+  Widget _detailBack(String title, String eyebrow, {VoidCallback? onRefresh}) =>
+      Row(
+        children: [
+          IconButton(
+            tooltip: 'Volver a la colección',
+            onPressed: () => setState(() {
+              if (_showingArtistAlbum) {
+                _selectedKey = _returnArtistKey;
+                _selectedName = _returnArtistName;
+                _showingArtistAlbum = false;
+              } else {
+                _selectedKey = null;
+                _selectedName = null;
+              }
+            }),
+            icon: const Icon(Icons.arrow_back_rounded, color: _cyan),
+          ),
+          const SizedBox(width: 7),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  eyebrow,
+                  style: const TextStyle(
+                    color: _cyan,
+                    fontSize: 9,
+                    letterSpacing: 1.5,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 18,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ],
             ),
-            const SizedBox(height: 3),
-            Text(
-              title,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 18,
-                fontWeight: FontWeight.w700,
-              ),
+          ),
+          if (onRefresh != null)
+            IconButton(
+              tooltip: 'Actualizar',
+              onPressed: onRefresh,
+              icon: const Icon(Icons.refresh_rounded, color: _cyan),
             ),
-          ],
-        ),
-      ),
-    ],
-  );
+        ],
+      );
 
   Widget _hero({
     required String title,
@@ -1558,7 +1817,50 @@ class _MediaCollectionBrowserState extends State<MediaCollectionBrowser> {
     setState(() {
       _selectedKey = group?.key ?? 'artist:${_normalize(name)}';
       _selectedName = group?.title ?? name;
+      _artistSongResults = [];
+      _artistSongsError = null;
     });
+    unawaited(_loadArtistSongs(group?.title ?? name));
+  }
+
+  Future<void> _loadArtistSongs(
+    String artist, {
+    bool forceRefresh = false,
+  }) async {
+    final request = ++_artistSongRequest;
+    setState(() {
+      _loadingArtistSongs = true;
+      _artistSongsError = null;
+    });
+    try {
+      final songs = await ArtistSongDiscoveryService.instance.search(
+        artist,
+        forceRefresh: forceRefresh,
+      );
+      if (!mounted ||
+          request != _artistSongRequest ||
+          _selectedName?.toLowerCase() != artist.toLowerCase()) {
+        return;
+      }
+      setState(() {
+        _artistSongResults = songs;
+        _loadingArtistSongs = false;
+        _artistSongsError = songs.isEmpty
+            ? 'No encontramos canciones para este artista.'
+            : null;
+      });
+    } catch (_) {
+      if (!mounted ||
+          request != _artistSongRequest ||
+          _selectedName?.toLowerCase() != artist.toLowerCase()) {
+        return;
+      }
+      setState(() {
+        _artistSongResults = [];
+        _loadingArtistSongs = false;
+        _artistSongsError = 'No se pudo cargar su música. Intenta de nuevo.';
+      });
+    }
   }
 
   void _select(_MediaGroup group) {
