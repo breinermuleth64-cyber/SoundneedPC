@@ -2324,6 +2324,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
                         content: const Text('No tienes notificaciones nuevas.'),
                       ),
                     ),
+                    onExplore: () => _navigate('Álbumes'),
                     onMinimize: () => unawaited(
                       _windowChannel.invokeMethod<void>('minimize'),
                     ),

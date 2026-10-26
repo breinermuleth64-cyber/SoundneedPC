@@ -28,6 +28,7 @@ class SoundNeedTopBar extends StatefulWidget {
     required this.onHome,
     required this.onSettings,
     required this.onNotifications,
+    required this.onExplore,
     required this.onMinimize,
     required this.onToggleMaximize,
     required this.onClose,
@@ -51,6 +52,7 @@ class SoundNeedTopBar extends StatefulWidget {
   final VoidCallback onHome;
   final VoidCallback onSettings;
   final VoidCallback onNotifications;
+  final VoidCallback onExplore;
   final VoidCallback onMinimize;
   final VoidCallback onToggleMaximize;
   final VoidCallback onClose;
@@ -65,6 +67,7 @@ class _SoundNeedTopBarState extends State<SoundNeedTopBar> {
   final GlobalKey _searchKey = GlobalKey();
   final GlobalKey _settingsKey = GlobalKey();
   final GlobalKey _notificationsKey = GlobalKey();
+  final GlobalKey _exploreKey = GlobalKey();
   final GlobalKey _downloadsKey = GlobalKey();
   final GlobalKey _minimizeKey = GlobalKey();
   final GlobalKey _maximizeKey = GlobalKey();
@@ -85,6 +88,7 @@ class _SoundNeedTopBarState extends State<SoundNeedTopBar> {
       _searchKey,
       _settingsKey,
       _notificationsKey,
+      _exploreKey,
       _downloadsKey,
       _minimizeKey,
       _maximizeKey,
@@ -166,6 +170,14 @@ class _SoundNeedTopBarState extends State<SoundNeedTopBar> {
                     svgName: 'notification',
                     tooltip: 'Notificaciones',
                     onPressed: widget.onNotifications,
+                  ),
+                  const SizedBox(width: 8),
+                  _buildTopBarIcon(
+                    key: _exploreKey,
+                    icon: Icons.layers_outlined,
+                    svgName: 'layers-3',
+                    tooltip: 'Explorar',
+                    onPressed: widget.onExplore,
                   ),
                   const SizedBox(width: 8),
                   _buildTopBarIcon(
