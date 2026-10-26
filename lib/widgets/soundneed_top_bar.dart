@@ -4,7 +4,10 @@ import 'package:flutter/cupertino.dart';
 import 'package:flutter/gestures.dart' show kPrimaryButton;
 import 'package:flutter/material.dart';
 
+import 'soundneed_svg_icon.dart';
+
 const Color _text = Color(0xFFF4F4F5);
+const Color _iconMuted = Color(0xFF85858F);
 const Color _red = Color(0xFFEF4444);
 
 class SoundNeedTopBar extends StatefulWidget {
@@ -23,8 +26,8 @@ class SoundNeedTopBar extends StatefulWidget {
     required this.accentColor,
     required this.mutedColor,
     required this.onHome,
-    required this.onImportFiles,
-    required this.onImportFolder,
+    required this.onSettings,
+    required this.onNotifications,
     required this.onMinimize,
     required this.onToggleMaximize,
     required this.onClose,
@@ -46,8 +49,8 @@ class SoundNeedTopBar extends StatefulWidget {
   final Color mutedColor;
 
   final VoidCallback onHome;
-  final VoidCallback onImportFiles;
-  final VoidCallback onImportFolder;
+  final VoidCallback onSettings;
+  final VoidCallback onNotifications;
   final VoidCallback onMinimize;
   final VoidCallback onToggleMaximize;
   final VoidCallback onClose;
@@ -60,8 +63,9 @@ class SoundNeedTopBar extends StatefulWidget {
 class _SoundNeedTopBarState extends State<SoundNeedTopBar> {
   final GlobalKey _homeKey = GlobalKey();
   final GlobalKey _searchKey = GlobalKey();
-  final GlobalKey _filesKey = GlobalKey();
-  final GlobalKey _folderKey = GlobalKey();
+  final GlobalKey _settingsKey = GlobalKey();
+  final GlobalKey _notificationsKey = GlobalKey();
+  final GlobalKey _downloadsKey = GlobalKey();
   final GlobalKey _minimizeKey = GlobalKey();
   final GlobalKey _maximizeKey = GlobalKey();
   final GlobalKey _closeKey = GlobalKey();
@@ -79,8 +83,9 @@ class _SoundNeedTopBarState extends State<SoundNeedTopBar> {
     final keys = [
       _homeKey,
       _searchKey,
-      _filesKey,
-      _folderKey,
+      _settingsKey,
+      _notificationsKey,
+      _downloadsKey,
       _minimizeKey,
       _maximizeKey,
       _closeKey,
@@ -137,6 +142,14 @@ class _SoundNeedTopBarState extends State<SoundNeedTopBar> {
                   _buildBrand(compact: compact),
                   SizedBox(width: veryCompact ? 8 : 22),
                   _buildHomeButton(),
+                  const SizedBox(width: 8),
+                  _buildTopBarIcon(
+                    key: _downloadsKey,
+                    icon: Icons.download_rounded,
+                    svgName: 'downloading-updates',
+                    tooltip: 'Descargas',
+                    onPressed: () {},
+                  ),
                   SizedBox(width: veryCompact ? 8 : 18),
                 ],
                 Expanded(
@@ -145,22 +158,25 @@ class _SoundNeedTopBarState extends State<SoundNeedTopBar> {
                     child: _buildSearch(compact: true),
                   ),
                 ),
-                if (!ultraCompact)
-                  _buildImportButton(
-                    key: _filesKey,
-                    icon: Icons.library_music_rounded,
-                    tooltip: 'Importar archivos',
-                    onPressed: widget.onImportFiles,
-                  ),
-                if (!compact && width >= 900) ...[
+                if (!compact) ...[
                   const SizedBox(width: 8),
-                  _buildImportButton(
-                    key: _folderKey,
-                    icon: Icons.folder_open_rounded,
-                    tooltip: 'Importar carpeta',
-                    onPressed: widget.onImportFolder,
+                  _buildTopBarIcon(
+                    key: _notificationsKey,
+                    icon: Icons.notifications_none_rounded,
+                    svgName: 'notification',
+                    tooltip: 'Notificaciones',
+                    onPressed: widget.onNotifications,
+                  ),
+                  const SizedBox(width: 8),
+                  _buildTopBarIcon(
+                    key: _settingsKey,
+                    icon: Icons.settings_rounded,
+                    svgName: 'settings',
+                    tooltip: 'Configuración',
+                    onPressed: widget.onSettings,
                   ),
                 ],
+                if (!compact) const SizedBox(width: 16),
                 if (width >= 320) _buildWindowControls(),
               ],
             ),
@@ -182,8 +198,13 @@ class _SoundNeedTopBarState extends State<SoundNeedTopBar> {
             shape: BoxShape.circle,
             border: Border.all(color: _border),
           ),
-          child: const Center(
-            child: Icon(CupertinoIcons.waveform, color: _text, size: 23),
+          child: Center(
+            child: Image.asset(
+              'assets/icon/app_icon_source.png',
+              fit: BoxFit.contain,
+              width: 24,
+              height: 24,
+            ),
           ),
         ),
         if (!compact) ...[
@@ -219,13 +240,17 @@ class _SoundNeedTopBarState extends State<SoundNeedTopBar> {
   }
 
   Widget _buildHomeButton() {
+    final isHome = widget.section.toLowerCase() == 'inicio';
     return _circleButton(
       key: _homeKey,
       icon: CupertinoIcons.house,
+      svgName: isHome ? 'home-filled' : 'home',
+      svgColor: isHome ? _text : _muted,
       tooltip: 'Inicio',
       onPressed: widget.onHome,
       size: 42,
-      background: widget.section.toLowerCase() == 'home' ? _hover : _surface,
+      iconSize: 23,
+      background: isHome ? _hover : _surface,
     );
   }
 
@@ -244,10 +269,10 @@ class _SoundNeedTopBarState extends State<SoundNeedTopBar> {
       child: Row(
         children: [
           const SizedBox(width: 16),
-          Icon(
-            CupertinoIcons.search,
+          SoundNeedSvgIcon(
+            'search',
             color: _searchFocused ? _text : _muted,
-            size: 21,
+            size: 24,
           ),
           const SizedBox(width: 10),
           Expanded(
@@ -332,15 +357,19 @@ class _SoundNeedTopBarState extends State<SoundNeedTopBar> {
     );
   }
 
-  Widget _buildImportButton({
+  Widget _buildTopBarIcon({
     required Key key,
     required IconData icon,
+    String? svgName,
+    Color? svgColor,
     required String tooltip,
     required VoidCallback onPressed,
   }) {
     return _circleButton(
       key: key,
       icon: icon,
+      svgName: svgName,
+      svgColor: svgColor,
       tooltip: tooltip,
       onPressed: onPressed,
       size: 40,
@@ -400,10 +429,12 @@ class _SoundNeedTopBarState extends State<SoundNeedTopBar> {
   Widget _circleButton({
     Key? key,
     required IconData icon,
+    String? svgName,
+    Color? svgColor,
     required String tooltip,
     required VoidCallback onPressed,
     double size = 40,
-    double iconSize = 19,
+    double iconSize = 23,
     Color background = _surface,
     Color borderColor = _border,
     Color hoverColor = _hover,
@@ -414,6 +445,8 @@ class _SoundNeedTopBarState extends State<SoundNeedTopBar> {
     return _CircleButton(
       key: key,
       icon: icon,
+      svgName: svgName,
+      svgColor: svgColor,
       tooltip: tooltip,
       onPressed: onPressed,
       size: size,
@@ -432,6 +465,8 @@ class _CircleButton extends StatefulWidget {
   const _CircleButton({
     super.key,
     required this.icon,
+    this.svgName,
+    this.svgColor,
     required this.tooltip,
     required this.onPressed,
     required this.size,
@@ -445,6 +480,8 @@ class _CircleButton extends StatefulWidget {
   });
 
   final IconData icon;
+  final String? svgName;
+  final Color? svgColor;
   final String tooltip;
   final VoidCallback onPressed;
   final double size;
@@ -473,7 +510,8 @@ class _CircleButtonState extends State<_CircleButton> {
         onEnter: (_) => setState(() => _hovered = true),
         onExit: (_) => setState(() => _hovered = false),
         child: AnimatedContainer(
-          duration: const Duration(milliseconds: 140),
+          duration: const Duration(milliseconds: 80),
+          curve: Curves.easeOut,
           width: widget.width ?? widget.size,
           height: widget.height ?? widget.size,
           decoration: BoxDecoration(
@@ -492,13 +530,23 @@ class _CircleButtonState extends State<_CircleButton> {
                   : const CircleBorder(),
               onTap: widget.onPressed,
               child: Center(
-                child: Icon(
-                  widget.icon,
-                  size: widget.iconSize,
-                  color: _hovered && widget.hoverColor == _red
-                      ? Colors.white
-                      : _text,
-                ),
+                child: widget.svgName == null
+                    ? Icon(
+                        widget.icon,
+                        size: widget.iconSize,
+                        color: _hovered && widget.hoverColor == _red
+                            ? Colors.white
+                            : _text,
+                      )
+                    : SoundNeedSvgIcon(
+                        widget.svgName!,
+                        size: widget.iconSize,
+                        color: _hovered && widget.hoverColor == _red
+                            ? Colors.white
+                            : _hovered
+                            ? _text
+                            : (widget.svgColor ?? _iconMuted),
+                      ),
               ),
             ),
           ),

@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../models/track.dart';
+import '../services/playlist_library_service.dart';
 import '../services/playlist_search_service.dart';
 import '../widgets/library_content.dart';
 import '../widgets/middle_content_panel.dart';
@@ -432,11 +433,17 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
     }
     final path = songs[i].coverPath;
     if (path == null || path.isEmpty) return _placeholder();
-    return Image.file(
-      File(path),
-      fit: BoxFit.cover,
-      errorBuilder: (_, _, _) => _placeholder(),
-    );
+    return path.startsWith('http://') || path.startsWith('https://')
+        ? Image.network(
+            path,
+            fit: BoxFit.cover,
+            errorBuilder: (_, _, _) => _placeholder(),
+          )
+        : Image.file(
+            File(path),
+            fit: BoxFit.cover,
+            errorBuilder: (_, _, _) => _placeholder(),
+          );
   }
 
   Widget _placeholder() => const ColoredBox(
@@ -1088,11 +1095,17 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
   Widget _cover(Track track) {
     final path = track.coverPath;
     if (path == null || path.isEmpty) return _placeholder();
-    return Image.file(
-      File(path),
-      fit: BoxFit.cover,
-      errorBuilder: (_, _, _) => _placeholder(),
-    );
+    return path.startsWith('http://') || path.startsWith('https://')
+        ? Image.network(
+            path,
+            fit: BoxFit.cover,
+            errorBuilder: (_, _, _) => _placeholder(),
+          )
+        : Image.file(
+            File(path),
+            fit: BoxFit.cover,
+            errorBuilder: (_, _, _) => _placeholder(),
+          );
   }
 
   List<Track> _likedSongs() => widget.tracks
@@ -1102,7 +1115,7 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
     if (name == null) return const [];
     final byPath = {for (final track in widget.tracks) track.path: track};
     return (widget.playlists[name] ?? const <String>[])
-        .map((path) => byPath[path])
+        .map((path) => byPath[path] ?? PlaylistLibraryService.decodeOnlineTrack(path))
         .whereType<Track>()
         .toList(growable: false);
   }

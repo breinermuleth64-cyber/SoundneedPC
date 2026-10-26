@@ -23,7 +23,7 @@ class MiddleContentPanel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: EdgeInsets.fromLTRB(0, 0, config.hasNowPlayingPanel ? 0 : 13, 4),
+      padding: EdgeInsets.fromLTRB(0, 0, config.hasNowPlayingPanel ? 0 : 13, 0),
       child: Container(
         clipBehavior: Clip.antiAlias,
         decoration: BoxDecoration(
@@ -41,6 +41,7 @@ class MiddleContentPanel extends StatelessWidget {
                 config.compact ? 22 : 38,
                 28,
               ),
+              cacheExtent: 500,
               children: [
                 if (showHeader && section != 'Buscar')
                   Row(

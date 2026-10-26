@@ -35,6 +35,7 @@ import 'services/home_discovery_service.dart';
 import 'services/listening_history_service.dart';
 import 'services/playlist_library_service.dart';
 import 'widgets/soundneed_sidebar.dart';
+import 'widgets/soundneed_svg_icon.dart';
 import 'widgets/soundneed_top_bar.dart';
 
 export 'models/track.dart';
@@ -260,6 +261,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
   int? _currentIndex;
   bool _loading = true;
   bool _scanning = false;
+  bool? _sidebarCompactOverride;
   bool _queueOpen = false;
   bool _onlineMode = false;
   bool _loopEnabled = false;
@@ -431,7 +433,6 @@ class _LibraryScreenState extends State<LibraryScreen> {
     await prefs.setStringList('folders.v1', _folders);
   }
 
-
   Future<void> _importFiles() async {
     final files = await openFiles(
       acceptedTypeGroups: const [
@@ -537,7 +538,24 @@ class _LibraryScreenState extends State<LibraryScreen> {
     }
   }
 
+  List<Track> _cachedVisibleTracks = [];
+  String? _cachedSection;
+  String? _cachedPlaylistView;
+  String? _cachedQuery;
+  Set<String>? _cachedFavorites;
+  Map<String, List<String>>? _cachedPlaylists;
+
   List<Track> get _visibleTracks {
+    // Check if cache is valid
+    if (_cachedSection == _section &&
+        _cachedPlaylistView == _playlistView &&
+        _cachedQuery == _query &&
+        _cachedFavorites == _favorites &&
+        _cachedPlaylists == _playlists) {
+      return _cachedVisibleTracks;
+    }
+
+    // Recalculate and cache
     Iterable<Track> view = _tracks;
     if (_section == 'Favoritos')
       view = view.where((track) => _favorites.contains(track.path));
@@ -553,7 +571,15 @@ class _LibraryScreenState extends State<LibraryScreen> {
             track.artist.toLowerCase().contains(query) ||
             track.album.toLowerCase().contains(query),
       );
-    return view.toList();
+
+    _cachedVisibleTracks = view.toList();
+    _cachedSection = _section;
+    _cachedPlaylistView = _playlistView;
+    _cachedQuery = _query;
+    _cachedFavorites = Set.from(_favorites);
+    _cachedPlaylists = Map.from(_playlists);
+
+    return _cachedVisibleTracks;
   }
 
   Track? get _currentLocalTrack {
@@ -758,12 +784,53 @@ class _LibraryScreenState extends State<LibraryScreen> {
     bool shuffle,
   ) async {
     if (tracks.isEmpty) return;
+    final requested = tracks[startAt.clamp(0, tracks.length - 1).toInt()];
+    final onlineId = PlaylistLibraryService.onlineVideoId(requested.path);
+    if (onlineId != null) {
+      final onlineQueue = tracks
+          .map((track) {
+            final id = PlaylistLibraryService.onlineVideoId(track.path);
+            final decoded = PlaylistLibraryService.decodeOnlineTrack(
+              track.path,
+            );
+            if (id == null || decoded == null) return null;
+            return _OnlineTrack(
+              videoId: id,
+              title: decoded.title,
+              artist: decoded.artist,
+              thumbnail: decoded.coverPath ?? '',
+              durationSeconds: (decoded.durationMs ?? 0) ~/ 1000,
+            );
+          })
+          .whereType<_OnlineTrack>()
+          .toList(growable: false);
+      final start = onlineQueue.indexWhere(
+        (track) => track.videoId == onlineId,
+      );
+      if (onlineQueue.isNotEmpty) {
+        await _playOnlineTrack(
+          onlineQueue[start < 0 ? 0 : start],
+          queue: onlineQueue,
+          queueIndex: start < 0 ? 0 : start,
+        );
+        return;
+      }
+    }
+    final localTracks = tracks
+        .where(
+          (track) => PlaylistLibraryService.onlineVideoId(track.path) == null,
+        )
+        .toList(growable: false);
+    if (localTracks.isEmpty) return;
+    final localStart = localTracks.indexWhere(
+      (track) => track.path == requested.path,
+    );
     if (shuffle) {
-      final mixed = List<Track>.of(tracks)..shuffle();
+      final mixed = List<Track>.of(localTracks)..shuffle();
       await _loadQueue(mixed);
       return;
     }
-    await _loadQueue(tracks, startAt: startAt);
+    await _loadQueue(localTracks, startAt: localStart < 0 ? 0 : localStart);
   }
 
   Future<void> _playTrack(Track track) async {
@@ -1017,6 +1084,43 @@ class _LibraryScreenState extends State<LibraryScreen> {
       setState(() {});
       _toast(added == 0 ? 'La canción ya está en $name.' : 'Añadida a $name.');
     }
+  }
+
+  Future<void> _addOnlineToPlaylist(_OnlineTrack track) async {
+    if (_playlists.isEmpty) {
+      _toast('Crea primero una playlist.');
+      return;
+    }
+    final name = await showDialog<String>(
+      context: context,
+      builder: (context) => SimpleDialog(
+        backgroundColor: _panel,
+        title: const Text('Añadir canción online a playlist'),
+        children: _playlists.keys
+            .map(
+              (name) => SimpleDialogOption(
+                onPressed: () => Navigator.pop(context, name),
+                child: Text(name),
+              ),
+            )
+            .toList(),
+      ),
+    );
+    if (name == null) return;
+    final key = PlaylistLibraryService.encodeOnlineTrack(
+      Track(
+        path: '',
+        title: track.title,
+        artist: track.artist,
+        coverPath: track.thumbnail,
+        durationMs: track.durationSeconds * 1000,
+      ),
+      track.videoId,
+    );
+    final added = await _playlistLibrary.addTracks(name, [key]);
+    if (!mounted) return;
+    setState(() {});
+    _toast(added == 0 ? 'La canción ya está en $name.' : 'Añadida a $name.');
   }
 
   void _toast(String message) {
@@ -2172,9 +2276,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
                                 ),
                               ),
                             ),
-                            const DecoratedBox(
-                              decoration: _videoBackdropShade,
-                            ),
+                            const DecoratedBox(decoration: _videoBackdropShade),
                           ],
                         ),
                       )
@@ -2208,8 +2310,20 @@ class _LibraryScreenState extends State<LibraryScreen> {
                       _section = 'Inicio';
                       _playlistView = null;
                     }),
-                    onImportFiles: () => unawaited(_importFiles()),
-                    onImportFolder: () => unawaited(_importFolder()),
+                    onSettings: () => showDialog<void>(
+                      context: context,
+                      builder: (context) => AlertDialog(
+                        title: const Text('Configuración'),
+                        content: SingleChildScrollView(child: _settingsPanel()),
+                      ),
+                    ),
+                    onNotifications: () => showDialog<void>(
+                      context: context,
+                      builder: (context) => AlertDialog(
+                        title: const Text('Notificaciones'),
+                        content: const Text('No tienes notificaciones nuevas.'),
+                      ),
+                    ),
                     onMinimize: () => unawaited(
                       _windowChannel.invokeMethod<void>('minimize'),
                     ),
@@ -2228,7 +2342,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
                               crossAxisAlignment: CrossAxisAlignment.stretch,
                               children: [
                                 SoundNeedSidebar(
-                                  compact: compact,
+                                  compact: _sidebarCompactOverride ?? compact,
                                   section: _section,
                                   playlistView: _playlistView,
                                   playlistNames: _playlists.keys.toList(),
@@ -2236,6 +2350,10 @@ class _LibraryScreenState extends State<LibraryScreen> {
                                   accentColor: _cyan,
                                   mutedColor: _muted,
                                   onNavigate: _navigate,
+                                  collapsed: _sidebarCompactOverride ?? compact,
+                                  onTogglePanel: (collapsed) => setState(
+                                    () => _sidebarCompactOverride = collapsed,
+                                  ),
                                 ),
                                 Expanded(
                                   child: _mainContent(compact, showNowPlaying),
@@ -2463,6 +2581,11 @@ class _LibraryScreenState extends State<LibraryScreen> {
       ),
       'Tu música' => MusicPage(config: config),
       'Favoritos' => FavoritesPage(config: config),
+      'Carpetas' => MiddleContentPanel(
+        section: _section,
+        config: config,
+        body: _foldersPanel(),
+      ),
       'Álbumes' => AlbumsPage(
         config: config,
         tracks: _tracks,
@@ -2581,6 +2704,8 @@ class _LibraryScreenState extends State<LibraryScreen> {
           queueIndex: index,
         ),
       ),
+      onAddToPlaylist: (index) =>
+          unawaited(_addOnlineToPlaylist(_onlineResults[index])),
     );
   }
 
@@ -2724,7 +2849,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
               ),
               FilledButton.tonalIcon(
                 onPressed: _importFolder,
-                icon: const Icon(Icons.folder_open),
+                icon: const SoundNeedSvgIcon('folder', size: 18, color: _cyan),
                 label: const Text('Elegir carpeta'),
               ),
               if (_section == 'Playlists')
@@ -3566,6 +3691,86 @@ class _LibraryScreenState extends State<LibraryScreen> {
     }
   }
 
+  Widget _foldersPanel() {
+    if (_folders.isEmpty) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Todavía no has añadido carpetas.',
+            style: TextStyle(color: _muted, fontSize: 13),
+          ),
+          const SizedBox(height: 16),
+          FilledButton.tonalIcon(
+            onPressed: _importFolder,
+            icon: const Icon(Icons.create_new_folder_outlined),
+            label: const Text('Añadir carpeta'),
+          ),
+        ],
+      );
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          children: [
+            const Expanded(
+              child: Text(
+                'Carpetas importadas',
+                style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+              ),
+            ),
+            FilledButton.tonalIcon(
+              onPressed: _importFolder,
+              icon: const Icon(Icons.create_new_folder_outlined, size: 17),
+              label: const Text('Añadir carpeta'),
+            ),
+          ],
+        ),
+        const SizedBox(height: 14),
+        ..._folders.map((folder) {
+          final separator = Platform.pathSeparator;
+          final prefix = folder.endsWith(separator)
+              ? folder
+              : '$folder$separator';
+          final count = _tracks
+              .where(
+                (track) =>
+                    track.path.toLowerCase().startsWith(prefix.toLowerCase()),
+              )
+              .length;
+          final parts = folder.split(separator);
+          final name = parts.isEmpty || parts.last.isEmpty
+              ? folder
+              : parts.last;
+          return Container(
+            margin: const EdgeInsets.only(bottom: 9),
+            decoration: BoxDecoration(
+              color: _panel,
+              borderRadius: BorderRadius.circular(13),
+              border: Border.all(color: Colors.white.withValues(alpha: .06)),
+            ),
+            child: ListTile(
+              leading: const Icon(Icons.folder_outlined, color: _muted),
+              title: Text(name, maxLines: 1, overflow: TextOverflow.ellipsis),
+              subtitle: Text(
+                folder,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(color: _muted, fontSize: 11),
+              ),
+              trailing: Text(
+                '$count ${count == 1 ? 'canción' : 'canciones'}',
+                style: const TextStyle(color: _muted, fontSize: 11),
+              ),
+            ),
+          );
+        }),
+      ],
+    );
+  }
+
   Widget _settingsPanel() => Container(
     padding: const EdgeInsets.all(22),
     decoration: BoxDecoration(
@@ -3587,7 +3792,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
         const SizedBox(height: 16),
         OutlinedButton.icon(
           onPressed: _importFolder,
-          icon: const Icon(Icons.create_new_folder_outlined),
+          icon: const SoundNeedSvgIcon('folder', size: 18, color: _cyan),
           label: const Text('Añadir carpeta'),
         ),
         const SizedBox(height: 22),

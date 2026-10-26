@@ -2,15 +2,61 @@ import 'dart:convert';
 
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../models/track.dart';
+
 /// Owns playlist persistence and mutations for the Windows library.
 ///
 /// The `playlists.v1` shape stays compatible with existing installations:
-/// each playlist name maps to an ordered list of local track paths.
+/// each playlist name maps to an ordered list of local paths or encoded online
+/// tracks.
 class PlaylistLibraryService {
   PlaylistLibraryService._();
 
   static final instance = PlaylistLibraryService._();
   static const storageKey = 'playlists.v1';
+  static const onlineTrackPrefix = 'soundneed-online:';
+
+  static String encodeOnlineTrack(Track track, String videoId) {
+    final payload = jsonEncode({
+      'id': videoId,
+      'title': track.title,
+      'artist': track.artist,
+      'thumbnail': track.coverPath ?? '',
+      'durationSeconds': ((track.durationMs ?? 0) / 1000).round(),
+    });
+    return '$onlineTrackPrefix${base64Url.encode(utf8.encode(payload))}';
+  }
+
+  static Track? decodeOnlineTrack(String key) {
+    if (!key.startsWith(onlineTrackPrefix)) return null;
+    try {
+      final payload = jsonDecode(utf8.decode(base64Url.decode(
+        base64Url.normalize(key.substring(onlineTrackPrefix.length)),
+      ))) as Map<String, dynamic>;
+      final thumbnail = payload['thumbnail'] as String? ?? '';
+      return Track(
+        path: key,
+        title: payload['title'] as String? ?? '',
+        artist: payload['artist'] as String? ?? '',
+        coverPath: thumbnail,
+        durationMs: ((payload['durationSeconds'] as num?)?.toInt() ?? 0) * 1000,
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static String? onlineVideoId(String key) {
+    if (!key.startsWith(onlineTrackPrefix)) return null;
+    try {
+      final payload = jsonDecode(utf8.decode(base64Url.decode(
+        base64Url.normalize(key.substring(onlineTrackPrefix.length)),
+      ))) as Map<String, dynamic>;
+      return payload['id'] as String?;
+    } catch (_) {
+      return null;
+    }
+  }
 
   final Map<String, List<String>> _playlists = {};
 
