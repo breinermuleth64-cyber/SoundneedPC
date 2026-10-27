@@ -81,7 +81,6 @@ class HomePage extends StatelessWidget {
       body: LayoutBuilder(
         builder: (context, constraints) {
           final compact = constraints.maxWidth < 700;
-          final wide = constraints.maxWidth >= 1020;
           final gap = compact ? 24.0 : 32.0;
 
           return Column(
@@ -100,40 +99,17 @@ class HomePage extends StatelessWidget {
               const SizedBox(height: 14),
               _quickActions(),
               SizedBox(height: gap),
-              if (wide)
-                Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Expanded(
-                      child: _musicSection(
-                        colombiaChart,
-                        eyebrow: 'SONIDO LOCAL',
-                        compact: true,
-                      ),
-                    ),
-                    const SizedBox(width: 30),
-                    Expanded(
-                      child: _musicSection(
-                        worldChart,
-                        eyebrow: 'ALREDEDOR DEL MUNDO',
-                        compact: true,
-                      ),
-                    ),
-                  ],
-                )
-              else ...[
-                _musicSection(
-                  colombiaChart,
-                  eyebrow: 'SONIDO LOCAL',
-                  compact: compact,
-                ),
-                SizedBox(height: gap),
-                _musicSection(
-                  worldChart,
-                  eyebrow: 'ALREDEDOR DEL MUNDO',
-                  compact: compact,
-                ),
-              ],
+              _musicSection(
+                colombiaChart,
+                eyebrow: 'SONIDO LOCAL',
+                compact: compact,
+              ),
+              SizedBox(height: gap),
+              _musicSection(
+                worldChart,
+                eyebrow: 'ALREDEDOR DEL MUNDO',
+                compact: compact,
+              ),
               SizedBox(height: gap),
               HomePodcastSection(onPlay: onPlayPodcast),
               if (stationArtists.isNotEmpty) ...[

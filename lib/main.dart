@@ -263,6 +263,8 @@ class _LibraryScreenState extends State<LibraryScreen> {
   bool _loading = true;
   bool _scanning = false;
   bool? _sidebarCompactOverride;
+  bool _exploreSidebarHovered = false;
+  bool _nowPlayingCollapsed = false;
   bool _queueOpen = false;
   bool _onlineMode = false;
   bool _loopEnabled = false;
@@ -312,6 +314,9 @@ class _LibraryScreenState extends State<LibraryScreen> {
   StreamSubscription<Playlist>? _localAudioPlaylistSubscription;
   Timer? _pruneTimer;
   Timer? _onlineDebounce;
+  Timer? _exploreMeterTimer;
+  bool _exploreMeterRequestPending = false;
+  List<double> _exploreSpectrum = List<double>.filled(32, 0);
   int _onlineRequestId = 0;
   int _onlinePlaybackRequestId = 0;
 
@@ -370,7 +375,9 @@ class _LibraryScreenState extends State<LibraryScreen> {
   }
 
   void _navigate(String label) {
+    final enteringExplore = label == 'Explorar' && _section != 'Explorar';
     setState(() {
+      if (label == 'Explorar') _exploreSidebarHovered = false;
       if (_playlists.containsKey(label)) {
         _section = 'Playlists';
         _playlistView = label;
@@ -379,6 +386,85 @@ class _LibraryScreenState extends State<LibraryScreen> {
         _playlistView = null;
       }
     });
+    if (enteringExplore) {
+      _startExploreSpectrumPolling();
+      unawaited(_playRandomOnlineTrack());
+    } else if (label != 'Explorar') {
+      _exploreMeterTimer?.cancel();
+      _exploreMeterTimer = null;
+      _exploreSpectrum = List<double>.filled(32, 0);
+      unawaited(
+        _windowChannel
+            .invokeMethod<void>('stopOutputSpectrum')
+            .catchError((_) {}),
+      );
+    }
+  }
+
+  void _startExploreSpectrumPolling() {
+    _exploreMeterTimer?.cancel();
+    if (!Platform.isWindows) return;
+    _exploreSpectrum = List<double>.filled(32, 0);
+    unawaited(
+      _windowChannel
+          .invokeMethod<void>('startOutputSpectrum')
+          .catchError((_) {}),
+    );
+    _exploreMeterTimer = Timer.periodic(const Duration(milliseconds: 55), (
+      _,
+    ) async {
+      if (!mounted || _section != 'Explorar' || _exploreMeterRequestPending) {
+        return;
+      }
+      _exploreMeterRequestPending = true;
+      try {
+        final values = await _windowChannel.invokeListMethod<double>(
+          'getOutputSpectrum',
+        );
+        if (mounted &&
+            values != null &&
+            values.length == 32 &&
+            _section == 'Explorar') {
+          final nextSpectrum = values
+              .map((value) => value.clamp(0.0, 1.0).toDouble())
+              .toList(growable: false);
+          var changed = false;
+          for (var i = 0; i < nextSpectrum.length; i++) {
+            if ((nextSpectrum[i] - _exploreSpectrum[i]).abs() >= .01) {
+              changed = true;
+              break;
+            }
+          }
+          if (changed) {
+            setState(() => _exploreSpectrum = nextSpectrum);
+          }
+        }
+      } catch (_) {
+        // The visualizer stays still if output capture is unavailable.
+      } finally {
+        _exploreMeterRequestPending = false;
+      }
+    });
+  }
+
+  Future<void> _playRandomOnlineTrack() async {
+    List<_OnlineTrack> availableTracks() => _discoverMusic.tracks
+        .where(
+          (track) => RegExp(r'^[A-Za-z0-9_-]{11}$').hasMatch(track.videoId),
+        )
+        .toList(growable: false);
+
+    var tracks = availableTracks();
+    if (tracks.isEmpty) {
+      await _loadHomeCategory(_discoverMusic, refresh: true);
+      tracks = availableTracks();
+    }
+    if (tracks.isEmpty) {
+      if (mounted) _toast('No se encontró música online. Intenta de nuevo.');
+      return;
+    }
+    tracks.shuffle();
+    await _playOnlineTrack(tracks.first, queue: tracks, queueIndex: 0);
   }
 
   Future<void> _restore() async {
@@ -1290,13 +1376,13 @@ class _LibraryScreenState extends State<LibraryScreen> {
           _colombiaTop = visibleChart;
           category.tracks = visibleChart
               .skip(1)
-              .map(_chartTrackToOnlineTrack)
+              .map((track) => _chartTrackToOnlineTrack(track, 'colombia'))
               .toList(growable: false);
         } else {
           _worldTop = visibleChart;
           _worldArtists = artistTrends ?? _worldArtists;
           category.tracks = visibleChart
-              .map(_chartTrackToOnlineTrack)
+              .map((track) => _chartTrackToOnlineTrack(track, 'world'))
               .toList(growable: false);
         }
         category.loading = false;
@@ -1315,24 +1401,29 @@ class _LibraryScreenState extends State<LibraryScreen> {
     }
   }
 
-  _OnlineTrack _chartTrackToOnlineTrack(HomeChartTrack track) => _OnlineTrack(
-    videoId: 'chart:${track.id}',
-    title: track.title,
-    artist: track.artist,
-    thumbnail: track.artworkUrl,
-    durationSeconds: 0,
-    chartRank: track.rank,
-    chartKey: 'chart:${track.id}',
-  );
+  _OnlineTrack _chartTrackToOnlineTrack(HomeChartTrack track, String session) =>
+      _OnlineTrack(
+        videoId: 'chart:$session:${track.id}',
+        title: track.title,
+        artist: track.artist,
+        thumbnail: track.artworkUrl,
+        durationSeconds: 0,
+        chartRank: track.rank,
+        chartKey: 'chart:$session:${track.id}',
+      );
 
   Future<void> _playHomeChartTrack(
     HomeChartTrack chartTrack, {
     required List<HomeChartTrack> chart,
+    required String session,
   }) async {
-    final chartKey = 'chart:${chartTrack.id}';
+    final chartKey = 'chart:$session:${chartTrack.id}';
     setState(() => _resolvingChartKey = chartKey);
     try {
-      final selected = await _resolveHomeChartTrack(chartTrack);
+      final selected = await _resolveHomeChartTrack(
+        chartTrack,
+        session: session,
+      );
       if (!mounted) return;
       if (selected == null) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -1347,7 +1438,13 @@ class _LibraryScreenState extends State<LibraryScreen> {
       await _playOnlineTrack(selected, queue: [selected], queueIndex: 0);
       final playbackRequestId = _onlinePlaybackRequestId;
       unawaited(
-        _extendHomeChartQueue(chartTrack, chart, selected, playbackRequestId),
+        _extendHomeChartQueue(
+          chartTrack,
+          chart,
+          selected,
+          playbackRequestId,
+          session,
+        ),
       );
     } catch (_) {
       if (!mounted) return;
@@ -1448,7 +1545,10 @@ class _LibraryScreenState extends State<LibraryScreen> {
   String _homeChartTrackKey(HomeChartTrack track) =>
       '${_normalizeChartText(track.title)}|${_normalizeChartText(track.artist)}';
 
-  Future<_OnlineTrack?> _resolveHomeChartTrack(HomeChartTrack track) async {
+  Future<_OnlineTrack?> _resolveHomeChartTrack(
+    HomeChartTrack track, {
+    String session = 'global',
+  }) async {
     if (track.title.trim().isEmpty || track.artist.trim().isEmpty) return null;
     final key = _homeChartTrackKey(track);
     final cached = _resolvedHomeChartTracks[key];
@@ -1461,7 +1561,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
             ? track.artworkUrl
             : cached.thumbnail,
         durationSeconds: cached.durationSeconds,
-        chartKey: 'chart:${track.id}',
+        chartKey: 'chart:$session:${track.id}',
       );
     }
 
@@ -1539,7 +1639,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
           ? track.artworkUrl
           : best.thumbnails.highResUrl,
       durationSeconds: best.duration?.inSeconds ?? 0,
-      chartKey: 'chart:${track.id}',
+      chartKey: 'chart:$session:${track.id}',
     );
     _resolvedHomeChartTracks[key] = resolved;
     return resolved;
@@ -1550,6 +1650,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
     List<HomeChartTrack> chart,
     _OnlineTrack selected,
     int playbackRequestId,
+    String session,
   ) async {
     final start = chart.indexWhere((track) => track.id == current.id);
     if (start < 0) return;
@@ -1561,7 +1662,9 @@ class _LibraryScreenState extends State<LibraryScreen> {
       if (uniqueTracks.length == 6) break;
     }
     final resolved = await Future.wait(
-      uniqueTracks.map((track) => _resolveHomeChartTrack(track)),
+      uniqueTracks.map(
+        (track) => _resolveHomeChartTrack(track, session: session),
+      ),
     );
     final queue = <_OnlineTrack>[];
     final seenVideoIds = <String>{};
@@ -2194,6 +2297,12 @@ class _LibraryScreenState extends State<LibraryScreen> {
   @override
   void dispose() {
     _videoAudioSyncTimer?.cancel();
+    _exploreMeterTimer?.cancel();
+    unawaited(
+      _windowChannel
+          .invokeMethod<void>('stopOutputSpectrum')
+          .catchError((_) {}),
+    );
     _localAudioPositionSubscription?.cancel();
     _localAudioDurationSubscription?.cancel();
     _localAudioPlaylistSubscription?.cancel();
@@ -2243,9 +2352,12 @@ class _LibraryScreenState extends State<LibraryScreen> {
           final compact = constraints.maxWidth < 850;
           // Windows scaling can make a 1920 px display report only about
           // 1280 logical pixels, so show the third panel at this breakpoint.
-          final showNowPlaying =
+          final hasNowPlaying =
               constraints.maxWidth >= 1150 &&
               (current != null || _playingOnlineTrack != null);
+          final exploring = _section == 'Explorar';
+          final showNowPlaying =
+              hasNowPlaying && !_nowPlayingCollapsed && !exploring;
           return Stack(
             fit: StackFit.expand,
             children: [
@@ -2343,18 +2455,51 @@ class _LibraryScreenState extends State<LibraryScreen> {
                             child: Row(
                               crossAxisAlignment: CrossAxisAlignment.stretch,
                               children: [
-                                SoundNeedSidebar(
-                                  compact: _sidebarCompactOverride ?? compact,
-                                  section: _section,
-                                  playlistView: _playlistView,
-                                  playlistNames: _playlists.keys.toList(),
-                                  panelColor: _panel,
-                                  accentColor: _cyan,
-                                  mutedColor: _muted,
-                                  onNavigate: _navigate,
-                                  collapsed: _sidebarCompactOverride ?? compact,
-                                  onTogglePanel: (collapsed) => setState(
-                                    () => _sidebarCompactOverride = collapsed,
+                                MouseRegion(
+                                  onEnter: exploring
+                                      ? (_) => setState(
+                                          () => _exploreSidebarHovered = true,
+                                        )
+                                      : null,
+                                  onExit: exploring
+                                      ? (_) => setState(
+                                          () => _exploreSidebarHovered = false,
+                                        )
+                                      : null,
+                                  child: AnimatedContainer(
+                                    duration: const Duration(milliseconds: 420),
+                                    curve: Curves.easeInOutCubic,
+                                    width: exploring && !_exploreSidebarHovered
+                                        ? 14
+                                        : ((_sidebarCompactOverride ?? compact)
+                                              ? 84
+                                              : 254),
+                                    clipBehavior: Clip.hardEdge,
+                                    decoration: const BoxDecoration(),
+                                    child: exploring && !_exploreSidebarHovered
+                                        ? const SizedBox.expand()
+                                        : SoundNeedSidebar(
+                                            compact:
+                                                _sidebarCompactOverride ??
+                                                compact,
+                                            section: _section,
+                                            playlistView: _playlistView,
+                                            playlistNames: _playlists.keys
+                                                .toList(),
+                                            panelColor: _panel,
+                                            accentColor: _cyan,
+                                            mutedColor: _muted,
+                                            onNavigate: _navigate,
+                                            collapsed:
+                                                _sidebarCompactOverride ??
+                                                compact,
+                                            onTogglePanel: (collapsed) =>
+                                                setState(
+                                                  () =>
+                                                      _sidebarCompactOverride =
+                                                          collapsed,
+                                                ),
+                                          ),
                                   ),
                                 ),
                                 Expanded(
@@ -2363,34 +2508,45 @@ class _LibraryScreenState extends State<LibraryScreen> {
                                 AnimatedContainer(
                                   duration: const Duration(milliseconds: 380),
                                   curve: Curves.easeInOutCubic,
-                                  width: showNowPlaying ? 326 : 0,
+                                  width: hasNowPlaying && !exploring
+                                      ? (showNowPlaying ? 326 : 64)
+                                      : 0,
                                   child: ClipRect(
-                                    child: SizedBox(
-                                      width: 326,
-                                      child: Padding(
-                                        padding: const EdgeInsets.symmetric(
-                                          horizontal: 13,
-                                        ),
-                                        child: AnimatedSlide(
-                                          duration: const Duration(
-                                            milliseconds: 380,
-                                          ),
-                                          curve: Curves.easeInOutCubic,
-                                          offset: showNowPlaying
-                                              ? Offset.zero
-                                              : const Offset(.08, 0),
-                                          child: AnimatedOpacity(
-                                            duration: const Duration(
-                                              milliseconds: 260,
+                                    child: SizedBox.expand(
+                                      child: Stack(
+                                        children: [
+                                          if (showNowPlaying)
+                                            Positioned.fill(
+                                              child: Padding(
+                                                padding: const EdgeInsets.only(
+                                                  left: 13,
+                                                ),
+                                                child: AnimatedSlide(
+                                                  duration: const Duration(
+                                                    milliseconds: 380,
+                                                  ),
+                                                  curve: Curves.easeInOutCubic,
+                                                  offset: Offset.zero,
+                                                  child: _nowPlayingPanel(
+                                                    current,
+                                                  ),
+                                                ),
+                                              ),
                                             ),
-                                            curve: Curves.easeOut,
-                                            opacity: showNowPlaying ? 1 : 0,
-                                            child: SizedBox(
-                                              width: 300,
-                                              child: _nowPlayingPanel(current),
+                                          if (hasNowPlaying &&
+                                              _nowPlayingCollapsed)
+                                            Positioned(
+                                              right: 0,
+                                              top: 0,
+                                              bottom: 0,
+                                              child: _NowPlayingEdgeToggle(
+                                                onPressed: () => setState(
+                                                  () => _nowPlayingCollapsed =
+                                                      false,
+                                                ),
+                                              ),
                                             ),
-                                          ),
-                                        ),
+                                        ],
                                       ),
                                     ),
                                   ),
@@ -2516,7 +2672,11 @@ class _LibraryScreenState extends State<LibraryScreen> {
             _loadHomeChart(_colombiaChart, colombia: true, refresh: true),
           ),
           onPlay: (index) => unawaited(
-            _playHomeChartTrack(_colombiaTop[index + 1], chart: _colombiaTop),
+            _playHomeChartTrack(
+              _colombiaTop[index + 1],
+              chart: _colombiaTop,
+              session: 'colombia',
+            ),
           ),
         ),
         worldChart: _homeOnlineSection(
@@ -2528,7 +2688,11 @@ class _LibraryScreenState extends State<LibraryScreen> {
             _loadHomeChart(_worldChart, colombia: false, refresh: true),
           ),
           onPlay: (index) => unawaited(
-            _playHomeChartTrack(_worldTop[index], chart: _worldTop),
+            _playHomeChartTrack(
+              _worldTop[index],
+              chart: _worldTop,
+              session: 'world',
+            ),
           ),
         ),
         discoverMusic: _homeOnlineSection(
@@ -2540,7 +2704,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
         topTrack: _colombiaTop.isEmpty
             ? null
             : OnlineSearchResult(
-                videoId: 'chart:${_colombiaTop.first.id}',
+                videoId: 'chart:colombia:${_colombiaTop.first.id}',
                 title: _colombiaTop.first.title,
                 artist: _colombiaTop.first.artist,
                 thumbnail: _colombiaTop.first.artworkUrl,
@@ -2550,7 +2714,11 @@ class _LibraryScreenState extends State<LibraryScreen> {
         onPlayTopTrack: _colombiaTop.isEmpty
             ? null
             : () => unawaited(
-                _playHomeChartTrack(_colombiaTop.first, chart: _colombiaTop),
+                _playHomeChartTrack(
+                  _colombiaTop.first,
+                  chart: _colombiaTop,
+                  session: 'colombia',
+                ),
               ),
         playingVideoId:
             _playingOnlineTrack?.chartKey ?? _playingOnlineTrack?.videoId,
@@ -2581,7 +2749,19 @@ class _LibraryScreenState extends State<LibraryScreen> {
         onPlayStation: (artist) => unawaited(_playArtistStation(artist)),
         onNavigate: _navigate,
       ),
-      'Explorar' => ExplorePage(config: config, onNavigate: _navigate),
+      'Explorar' => ExplorePage(
+        config: config,
+        track: _currentLocalTrack,
+        onlineArtwork: _playingOnlineTrack?.thumbnail,
+        spectrum: _exploreSpectrum,
+        onPrevious: () => unawaited(_skipMiniPlayerTrack(-1)),
+        onNext: () => unawaited(_skipMiniPlayerTrack(1)),
+        canGoPrevious: _playingOnlineTrack != null && _onlineQueueIndex > 0,
+        canGoNext:
+            _playingOnlineTrack != null &&
+            _onlineQueueIndex >= 0 &&
+            _onlineQueueIndex < _onlinePlaybackQueue.length - 1,
+      ),
       'Tu música' => MusicPage(config: config),
       'Favoritos' => FavoritesPage(config: config),
       'Carpetas' => MiddleContentPanel(
@@ -2631,7 +2811,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
         onPlayArtistStation: _playArtistStation,
         onPlayArtistSong: _playArtistDiscoveryTrack,
         onPlayChartTrack: (track, queue) async {
-          await _playHomeChartTrack(track, chart: queue);
+          await _playHomeChartTrack(track, chart: queue, session: 'world');
         },
       ),
       'Playlists' => PlaylistsPage(
@@ -3300,6 +3480,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
       onAudioTap: () => unawaited(_switchToAudioMode()),
       videoActive: _videoMode,
       videoLoading: _videoLoading,
+      onCollapse: () => setState(() => _nowPlayingCollapsed = true),
       videoEnabled: onlineTrack?.directAudioUrl == null,
       onVideoTap: onlineTrack?.directAudioUrl != null || _videoLoading
           ? null
@@ -3853,4 +4034,89 @@ class _LibraryScreenState extends State<LibraryScreen> {
       ],
     ),
   );
+}
+
+class _NowPlayingEdgeToggle extends StatefulWidget {
+  const _NowPlayingEdgeToggle({required this.onPressed});
+
+  final VoidCallback onPressed;
+
+  @override
+  State<_NowPlayingEdgeToggle> createState() => _NowPlayingEdgeToggleState();
+}
+
+class _NowPlayingEdgeToggleState extends State<_NowPlayingEdgeToggle> {
+  bool _hovered = false;
+
+  @override
+  Widget build(BuildContext context) => Tooltip(
+    message: 'Mostrar vista previa',
+    child: MouseRegion(
+      cursor: SystemMouseCursors.click,
+      onEnter: (_) => setState(() => _hovered = true),
+      onExit: (_) => setState(() => _hovered = false),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 150),
+        width: 64,
+        child: ClipRRect(
+          borderRadius: const BorderRadius.horizontal(
+            left: Radius.circular(24),
+          ),
+          child: BackdropFilter(
+            filter: ui.ImageFilter.blur(
+              sigmaX: 48,
+              sigmaY: 48,
+              tileMode: TileMode.decal,
+            ),
+            child: ColoredBox(
+              color: _hovered
+                  ? const Color(0x9925252D)
+                  : const Color(0x8817171D),
+              child: Material(
+                color: Colors.transparent,
+                child: InkWell(
+                  onTap: widget.onPressed,
+                  child: Center(
+                    child: CustomPaint(
+                      size: const Size(42, 88),
+                      painter: _OpenPreviewChevronPainter(
+                        _hovered
+                            ? const Color(0xFFE0E0E8)
+                            : const Color(0xFFA8A8B5),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
+}
+
+class _OpenPreviewChevronPainter extends CustomPainter {
+  const _OpenPreviewChevronPainter(this.color);
+
+  final Color color;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = color
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.2
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round;
+    final path = Path()
+      ..moveTo(size.width * .72, 0)
+      ..lineTo(size.width * .28, size.height * .5)
+      ..lineTo(size.width * .72, size.height);
+    canvas.drawPath(path, paint);
+  }
+
+  @override
+  bool shouldRepaint(covariant _OpenPreviewChevronPainter oldDelegate) =>
+      oldDelegate.color != color;
 }

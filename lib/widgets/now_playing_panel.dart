@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import 'soundneed_svg_icon.dart';
+
 class NowPlayingPanel extends StatelessWidget {
   const NowPlayingPanel({
     required this.title,
@@ -8,6 +10,7 @@ class NowPlayingPanel extends StatelessWidget {
     required this.onAudioTap,
     required this.onVideoTap,
     required this.audioPlaying,
+    required this.onCollapse,
     this.audioActive = true,
     this.videoEnabled = true,
     this.videoActive = false,
@@ -21,6 +24,7 @@ class NowPlayingPanel extends StatelessWidget {
   final VoidCallback onAudioTap;
   final VoidCallback? onVideoTap;
   final bool audioPlaying;
+  final VoidCallback onCollapse;
   final bool audioActive;
   final bool videoEnabled;
   final bool videoActive;
@@ -42,25 +46,42 @@ class NowPlayingPanel extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 14),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+            padding: const EdgeInsets.only(left: 14, right: 8),
+            child: Row(
               children: [
-                Text(
-                  title,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w600,
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      const SizedBox(height: 3),
+                      Text(
+                        artist,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(color: _muted, fontSize: 10),
+                      ),
+                    ],
                   ),
                 ),
-                const SizedBox(height: 3),
-                Text(
-                  artist,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(color: _muted, fontSize: 10),
+                IconButton(
+                  tooltip: 'Ocultar vista previa',
+                  visualDensity: VisualDensity.compact,
+                  splashRadius: 18,
+                  onPressed: onCollapse,
+                  icon: const SoundNeedSvgIcon(
+                    'close-pane',
+                    size: 24,
+                    color: _muted,
+                  ),
                 ),
               ],
             ),

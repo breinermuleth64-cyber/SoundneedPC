@@ -305,31 +305,38 @@ class _SoundNeedTopBarState extends State<SoundNeedTopBar> {
               ),
             ),
           ),
-          if (widget.query.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.only(right: 8),
-              child: IconButton(
-                tooltip: 'Limpiar búsqueda',
-                visualDensity: VisualDensity.compact,
-                onPressed: () {
-                  widget.searchController.clear();
-                  widget.onSearchChanged('');
-                },
-                icon: const Icon(Icons.close_rounded, color: _muted, size: 17),
-              ),
-            )
-          else
-            const SizedBox(width: 4),
-          IconButton(
+          const SizedBox(width: 4),
+          AnimatedSwitcher(
             key: _exploreKey,
-            tooltip: 'Explorar',
-            visualDensity: VisualDensity.compact,
-            splashRadius: 19,
-            onPressed: widget.onExplore,
-            icon: const SoundNeedSvgIcon(
-              'layers-3',
-              size: 20,
-              color: _muted,
+            duration: const Duration(milliseconds: 180),
+            switchInCurve: Curves.easeOutBack,
+            switchOutCurve: Curves.easeIn,
+            transitionBuilder: (child, animation) => FadeTransition(
+              opacity: animation,
+              child: ScaleTransition(scale: animation, child: child),
+            ),
+            child: IconButton(
+              key: ValueKey(widget.query.isEmpty),
+              tooltip: widget.query.isEmpty ? 'Explorar' : 'Limpiar búsqueda',
+              visualDensity: VisualDensity.compact,
+              splashRadius: 19,
+              onPressed: widget.query.isEmpty
+                  ? widget.onExplore
+                  : () {
+                      widget.searchController.clear();
+                      widget.onSearchChanged('');
+                    },
+              icon: widget.query.isEmpty
+                  ? const SoundNeedSvgIcon(
+                      'layers-3',
+                      size: 20,
+                      color: _muted,
+                    )
+                  : const Icon(
+                      Icons.close_rounded,
+                      color: _muted,
+                      size: 20,
+                    ),
             ),
           ),
           const SizedBox(width: 6),

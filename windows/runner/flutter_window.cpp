@@ -2,6 +2,7 @@
 
 #include <dwmapi.h>
 #include <optional>
+#include <utility>
 #include <windowsx.h>
 
 #include "flutter/generated_plugin_registrant.h"
@@ -43,7 +44,19 @@ bool FlutterWindow::OnCreate() {
         }
 
         const auto& method = call.method_name();
-        if (method == "minimize") {
+        if (method == "startOutputSpectrum") {
+          spectrum_capture_.Start();
+          result->Success(flutter::EncodableValue());
+        } else if (method == "stopOutputSpectrum") {
+          spectrum_capture_.Stop();
+          result->Success(flutter::EncodableValue());
+        } else if (method == "getOutputSpectrum") {
+          flutter::EncodableList values;
+          for (double value : spectrum_capture_.GetSpectrum()) {
+            values.emplace_back(value);
+          }
+          result->Success(flutter::EncodableValue(std::move(values)));
+        } else if (method == "minimize") {
           ShowWindow(window, SW_MINIMIZE);
           result->Success(flutter::EncodableValue());
         } else if (method == "toggleMaximize") {
@@ -81,6 +94,7 @@ bool FlutterWindow::OnCreate() {
 }
 
 void FlutterWindow::OnDestroy() {
+  spectrum_capture_.Stop();
   window_channel_.reset();
   if (flutter_controller_) {
     flutter_controller_ = nullptr;
