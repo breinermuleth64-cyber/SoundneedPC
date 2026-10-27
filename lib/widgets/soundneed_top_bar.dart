@@ -173,14 +173,6 @@ class _SoundNeedTopBarState extends State<SoundNeedTopBar> {
                   ),
                   const SizedBox(width: 8),
                   _buildTopBarIcon(
-                    key: _exploreKey,
-                    icon: Icons.layers_outlined,
-                    svgName: 'layers-3',
-                    tooltip: 'Explorar',
-                    onPressed: widget.onExplore,
-                  ),
-                  const SizedBox(width: 8),
-                  _buildTopBarIcon(
                     key: _settingsKey,
                     icon: Icons.settings_rounded,
                     svgName: 'settings',
@@ -327,7 +319,20 @@ class _SoundNeedTopBarState extends State<SoundNeedTopBar> {
               ),
             )
           else
-            const SizedBox(width: 12),
+            const SizedBox(width: 4),
+          IconButton(
+            key: _exploreKey,
+            tooltip: 'Explorar',
+            visualDensity: VisualDensity.compact,
+            splashRadius: 19,
+            onPressed: widget.onExplore,
+            icon: const SoundNeedSvgIcon(
+              'layers-3',
+              size: 20,
+              color: _muted,
+            ),
+          ),
+          const SizedBox(width: 6),
         ],
       ),
     );

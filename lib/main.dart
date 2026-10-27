@@ -21,6 +21,7 @@ import 'models/track.dart';
 import 'pages/albums_page.dart';
 import 'pages/artists_page.dart';
 import 'pages/favorites_page.dart';
+import 'pages/explore_page.dart';
 import 'pages/home_page.dart';
 import 'pages/music_page.dart';
 import 'pages/playlists_page.dart';
@@ -2324,7 +2325,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
                         content: const Text('No tienes notificaciones nuevas.'),
                       ),
                     ),
-                    onExplore: () => _navigate('Álbumes'),
+                    onExplore: () => _navigate('Explorar'),
                     onMinimize: () => unawaited(
                       _windowChannel.invokeMethod<void>('minimize'),
                     ),
@@ -2580,6 +2581,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
         onPlayStation: (artist) => unawaited(_playArtistStation(artist)),
         onNavigate: _navigate,
       ),
+      'Explorar' => ExplorePage(config: config, onNavigate: _navigate),
       'Tu música' => MusicPage(config: config),
       'Favoritos' => FavoritesPage(config: config),
       'Carpetas' => MiddleContentPanel(
