@@ -265,6 +265,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
   bool? _sidebarCompactOverride;
   bool _exploreSidebarHovered = false;
   bool _nowPlayingCollapsed = false;
+  bool _nowPlayingExpanded = false;
   bool _queueOpen = false;
   bool _onlineMode = false;
   bool _loopEnabled = false;
@@ -2509,7 +2510,9 @@ class _LibraryScreenState extends State<LibraryScreen> {
                                   duration: const Duration(milliseconds: 380),
                                   curve: Curves.easeInOutCubic,
                                   width: hasNowPlaying && !exploring
-                                      ? (showNowPlaying ? 326 : 64)
+                                      ? (showNowPlaying
+                                            ? (_nowPlayingExpanded ? 430 : 326)
+                                            : 64)
                                       : 0,
                                   child: ClipRect(
                                     child: SizedBox.expand(
@@ -2529,6 +2532,8 @@ class _LibraryScreenState extends State<LibraryScreen> {
                                                   offset: Offset.zero,
                                                   child: _nowPlayingPanel(
                                                     current,
+                                                    expanded:
+                                                        _nowPlayingExpanded,
                                                   ),
                                                 ),
                                               ),
@@ -3439,8 +3444,9 @@ class _LibraryScreenState extends State<LibraryScreen> {
     );
   }
 
-  Widget _nowPlayingPanel(Track? track) {
+  Widget _nowPlayingPanel(Track? track, {required bool expanded}) {
     final onlineTrack = _playingOnlineTrack;
+    final artworkSize = expanded ? 350.0 : 270.0;
     final videoReadyForCurrentTrack =
         _videoMode &&
         !_videoPreviewUnavailable &&
@@ -3457,30 +3463,35 @@ class _LibraryScreenState extends State<LibraryScreen> {
             ),
           )
         : track != null
-        ? _cover(track, 270)
+        ? _cover(track, artworkSize)
         : onlineTrack != null
         ? ClipRRect(
             borderRadius: BorderRadius.circular(20),
             child: Image.network(
               onlineTrack.thumbnail,
-              width: 270,
-              height: 270,
+              width: artworkSize,
+              height: artworkSize,
               fit: BoxFit.cover,
               errorBuilder: (context, error, stackTrace) =>
-                  _coverPlaceholder(270),
+                  _coverPlaceholder(artworkSize),
             ),
           )
-        : _coverPlaceholder(270);
+        : _coverPlaceholder(artworkSize);
     return NowPlayingPanel(
-      title: track?.title ?? onlineTrack?.title ?? 'Elige una canción',
-      artist: track?.artist ?? onlineTrack?.artist ?? 'Tu biblioteca te espera',
       artwork: artwork,
+      artworkSize: artworkSize,
       audioPlaying: _player.playing,
       audioActive: !_videoMode,
       onAudioTap: () => unawaited(_switchToAudioMode()),
       videoActive: _videoMode,
       videoLoading: _videoLoading,
-      onCollapse: () => setState(() => _nowPlayingCollapsed = true),
+      onCollapse: () => setState(() {
+        _nowPlayingCollapsed = true;
+        _nowPlayingExpanded = false;
+      }),
+      expanded: expanded,
+      onToggleExpand: () =>
+          setState(() => _nowPlayingExpanded = !_nowPlayingExpanded),
       videoEnabled: onlineTrack?.directAudioUrl == null,
       onVideoTap: onlineTrack?.directAudioUrl != null || _videoLoading
           ? null

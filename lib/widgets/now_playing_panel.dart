@@ -4,13 +4,14 @@ import 'soundneed_svg_icon.dart';
 
 class NowPlayingPanel extends StatelessWidget {
   const NowPlayingPanel({
-    required this.title,
-    required this.artist,
     required this.artwork,
+    required this.artworkSize,
     required this.onAudioTap,
     required this.onVideoTap,
     required this.audioPlaying,
     required this.onCollapse,
+    required this.onToggleExpand,
+    required this.expanded,
     this.audioActive = true,
     this.videoEnabled = true,
     this.videoActive = false,
@@ -18,13 +19,14 @@ class NowPlayingPanel extends StatelessWidget {
     super.key,
   });
 
-  final String title;
-  final String artist;
   final Widget artwork;
+  final double artworkSize;
   final VoidCallback onAudioTap;
   final VoidCallback? onVideoTap;
   final bool audioPlaying;
   final VoidCallback onCollapse;
+  final VoidCallback onToggleExpand;
+  final bool expanded;
   final bool audioActive;
   final bool videoEnabled;
   final bool videoActive;
@@ -46,32 +48,9 @@ class NowPlayingPanel extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Padding(
-            padding: const EdgeInsets.only(left: 14, right: 8),
+            padding: const EdgeInsets.symmetric(horizontal: 8),
             child: Row(
               children: [
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        title,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          fontSize: 13,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                      const SizedBox(height: 3),
-                      Text(
-                        artist,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(color: _muted, fontSize: 10),
-                      ),
-                    ],
-                  ),
-                ),
                 IconButton(
                   tooltip: 'Ocultar vista previa',
                   visualDensity: VisualDensity.compact,
@@ -83,14 +62,57 @@ class NowPlayingPanel extends StatelessWidget {
                     color: _muted,
                   ),
                 ),
+                const Spacer(),
+                IconButton(
+                  tooltip: expanded
+                      ? 'Reducir vista previa'
+                      : 'Ampliar vista previa',
+                  visualDensity: VisualDensity.compact,
+                  splashRadius: 18,
+                  onPressed: onToggleExpand,
+                  icon: Icon(
+                    expanded
+                        ? Icons.close_fullscreen_rounded
+                        : Icons.open_in_full_rounded,
+                    color: _muted,
+                    size: 20,
+                  ),
+                ),
+                PopupMenuButton<_PreviewPanelAction>(
+                  tooltip: 'Opciones',
+                  icon: const Icon(Icons.more_horiz_rounded, color: _muted),
+                  onSelected: (action) {
+                    switch (action) {
+                      case _PreviewPanelAction.toggleMode:
+                        onVideoTap?.call();
+                        break;
+                      case _PreviewPanelAction.hide:
+                        onCollapse();
+                        break;
+                    }
+                  },
+                  itemBuilder: (context) => [
+                    PopupMenuItem(
+                      value: _PreviewPanelAction.toggleMode,
+                      enabled: videoEnabled && (videoActive || !videoLoading),
+                      child: Text(
+                        videoActive ? 'Volver al audio' : 'Ver video',
+                      ),
+                    ),
+                    const PopupMenuItem(
+                      value: _PreviewPanelAction.hide,
+                      child: Text('Ocultar vista previa'),
+                    ),
+                  ],
+                ),
               ],
             ),
           ),
           const SizedBox(height: 10),
           Center(
             child: SizedBox(
-              width: 270,
-              height: 270,
+              width: artworkSize,
+              height: artworkSize,
               child: Stack(
                 fit: StackFit.expand,
                 children: [
@@ -119,7 +141,9 @@ class NowPlayingPanel extends StatelessWidget {
                         children: [
                           _CoverModeButton(
                             tooltip: audioActive
-                                ? (audioPlaying ? 'Audio activo' : 'Audio pausado')
+                                ? (audioPlaying
+                                      ? 'Audio activo'
+                                      : 'Audio pausado')
                                 : 'Cambiar a audio',
                             icon: audioActive && audioPlaying
                                 ? Icons.graphic_eq_rounded
@@ -199,6 +223,8 @@ class NowPlayingPanel extends StatelessWidget {
     );
   }
 }
+
+enum _PreviewPanelAction { toggleMode, hide }
 
 class _CoverModeButton extends StatelessWidget {
   const _CoverModeButton({
