@@ -7,7 +7,8 @@ import 'dart:ui' as ui;
 import 'package:audio_metadata_reader/audio_metadata_reader.dart';
 import 'package:crypto/crypto.dart';
 import 'package:file_selector/file_selector.dart';
-import 'package:flutter/foundation.dart' show compute;
+import 'package:flutter/foundation.dart'
+    show compute, consolidateHttpClientResponseBytes;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show MethodChannel;
 import 'package:just_audio/just_audio.dart';
@@ -31,8 +32,10 @@ import 'widgets/middle_content_panel.dart';
 import 'widgets/mini_player.dart';
 import 'widgets/now_playing_panel.dart';
 import 'widgets/ambient_album_background.dart';
+import 'widgets/collection_hero.dart';
 import 'widgets/online_search_results.dart';
 import 'services/artist_song_discovery_service.dart';
+import 'services/artwork_palette.dart';
 import 'services/explore_discovery_service.dart';
 import 'services/home_discovery_service.dart';
 import 'services/listening_history_service.dart';
@@ -293,6 +296,9 @@ class _LibraryScreenState extends State<LibraryScreen> {
   String? _error;
   String? _onlineError;
   _OnlineTrack? _playingOnlineTrack;
+  ArtworkPalette _appPalette = ArtworkPalette.neutral;
+  String? _artworkPaletteKey;
+  int _artworkPaletteRequest = 0;
   String _query = '';
   List<_OnlineTrack> _onlineResults = const [];
   final _HomeOnlineCategory _colombiaChart = _HomeOnlineCategory(
@@ -349,6 +355,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
         _currentIndex = index;
         _duration = _player.duration;
       });
+      unawaited(_updateArtworkPalette());
     });
     _durationSubscription = _player.durationStream.listen((duration) {
       if (mounted && !_usingMediaKitForLocalAudio) {
@@ -391,8 +398,8 @@ class _LibraryScreenState extends State<LibraryScreen> {
   }
 
   void _navigate(String label) {
-    final reloadExplore = label == 'Explorar' &&
-        (_section != 'Explorar' || _exploreShowingTrack);
+    final reloadExplore =
+        label == 'Explorar' && (_section != 'Explorar' || _exploreShowingTrack);
     setState(() {
       if (label == 'Explorar') {
         _exploreSidebarHovered = false;
@@ -527,7 +534,8 @@ class _LibraryScreenState extends State<LibraryScreen> {
       if (_loopEnabled) await _player.setLoopMode(LoopMode.off);
       final selected = await _resolveExploreRecommendation(recommendation);
       if (selected == null) {
-        if (mounted) _toast('No encontramos una versión online para reproducir.');
+        if (mounted)
+          _toast('No encontramos una versión online para reproducir.');
         return;
       }
       final selectedTitle = _normalizeChartText(recommendation.title);
@@ -849,6 +857,56 @@ class _LibraryScreenState extends State<LibraryScreen> {
     return _cachedVisibleTracks;
   }
 
+  Future<void> _updateArtworkPalette() async {
+    final online = _playingOnlineTrack;
+    final local = online == null ? _currentLocalTrack : null;
+    final coverPath = local?.coverPath;
+    final key = online != null
+        ? 'online:${online.videoId}:${online.thumbnail}'
+        : local == null
+        ? null
+        : 'local:${local.path}:${coverPath ?? ''}';
+    if (key == _artworkPaletteKey) return;
+    _artworkPaletteKey = key;
+    final request = ++_artworkPaletteRequest;
+    if (key == null ||
+        (online == null && (coverPath == null || coverPath.isEmpty))) {
+      if (mounted && _appPalette != ArtworkPalette.neutral) {
+        setState(() => _appPalette = ArtworkPalette.neutral);
+      }
+      return;
+    }
+
+    try {
+      Uint8List bytes;
+      if (online != null) {
+        final client = HttpClient()
+          ..connectionTimeout = const Duration(seconds: 7);
+        try {
+          final response = await client
+              .getUrl(Uri.parse(online.thumbnail))
+              .then((request) => request.close())
+              .timeout(const Duration(seconds: 9));
+          if (response.statusCode < 200 || response.statusCode >= 300) return;
+          bytes = await consolidateHttpClientResponseBytes(response)
+              .timeout(const Duration(seconds: 9));
+        } finally {
+          client.close(force: true);
+        }
+      } else {
+        bytes = await File(coverPath!).readAsBytes();
+      }
+      final palette = await ArtworkPaletteExtractor.fromBytes(bytes);
+      if (mounted && request == _artworkPaletteRequest) {
+        setState(() => _appPalette = palette);
+      }
+    } catch (_) {
+      if (mounted && request == _artworkPaletteRequest) {
+        setState(() => _appPalette = ArtworkPalette.neutral);
+      }
+    }
+  }
+
   Track? get _currentLocalTrack {
     final index = _currentIndex;
     if (index == null || index < 0 || index >= _queue.length) return null;
@@ -978,6 +1036,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
       ..clear()
       ..addAll(tracks.map((track) => track.path));
     _currentIndex = startAt;
+    unawaited(_updateArtworkPalette());
     _position.value = _localAudioFallback.state.position;
     _duration = _localAudioFallback.state.duration;
     final prefs = await SharedPreferences.getInstance();
@@ -1016,6 +1075,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
           if (_usingMediaKitForLocalAudio && mounted) {
             if (playlist.index != _currentIndex) _beginListeningSession();
             setState(() => _currentIndex = playlist.index);
+            unawaited(_updateArtworkPalette());
           }
         });
   }
@@ -1050,10 +1110,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
     _listeningSessionId++;
   }
 
-  void _maybeRecordListeningAtHalfway(
-    Duration position,
-    Duration? duration,
-  ) {
+  void _maybeRecordListeningAtHalfway(Duration position, Duration? duration) {
     if (duration == null ||
         duration.inMilliseconds <= 0 ||
         position.inMilliseconds < duration.inMilliseconds ~/ 2 ||
@@ -1374,6 +1431,70 @@ class _LibraryScreenState extends State<LibraryScreen> {
     if (mounted) {
       setState(() {});
       _toast(added == 0 ? 'La canción ya está en $name.' : 'Añadida a $name.');
+    }
+  }
+
+  Track _libraryTrackForOnline(_OnlineTrack track) {
+    final metadata = Track(
+      path: '',
+      title: track.title,
+      artist: track.artist,
+      coverPath: track.thumbnail,
+      durationMs: track.durationSeconds * 1000,
+    );
+    return Track(
+      path: PlaylistLibraryService.encodeOnlineTrack(metadata, track.videoId),
+      title: metadata.title,
+      artist: metadata.artist,
+      coverPath: metadata.coverPath,
+      durationMs: metadata.durationMs,
+    );
+  }
+
+  Future<void> _addChartTrackToPlaylist(HomeChartTrack chartTrack) async {
+    final resolved = await _resolveHomeChartTrack(chartTrack, session: 'world');
+    if (!mounted) return;
+    if (resolved == null) {
+      _toast('No pudimos identificar la versión exacta para guardarla.');
+      return;
+    }
+    await _addToPlaylist(_libraryTrackForOnline(resolved));
+  }
+
+  Future<void> _toggleChartFavorite(HomeChartTrack chartTrack) async {
+    final title = _normalizeChartText(chartTrack.title);
+    final artist = _normalizeChartText(chartTrack.artist);
+    final matchingKeys = _favorites
+        .where((key) {
+          final saved = PlaylistLibraryService.decodeOnlineTrack(key);
+          return saved != null &&
+              _normalizeChartText(saved.title) == title &&
+              _normalizeChartText(saved.artist) == artist;
+        })
+        .toList(growable: false);
+
+    if (matchingKeys.isNotEmpty) {
+      _favorites.removeAll(matchingKeys);
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setStringList('favorites.v1', _favorites.toList());
+      if (mounted) {
+        setState(() {});
+        _toast('Quitada de Me gusta.');
+      }
+      return;
+    }
+
+    final resolved = await _resolveHomeChartTrack(chartTrack, session: 'world');
+    if (resolved == null) {
+      if (mounted) _toast('No pudimos identificar la canción para guardarla.');
+      return;
+    }
+    _favorites.add(_libraryTrackForOnline(resolved).path);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList('favorites.v1', _favorites.toList());
+    if (mounted) {
+      setState(() {});
+      _toast('Añadida a Me gusta.');
     }
   }
 
@@ -1959,6 +2080,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
       _error = null;
       _duration = null;
     });
+    unawaited(_updateArtworkPalette());
     try {
       await _writePlaybackLog('Resolving online audio stream');
       await _player.stop();
@@ -2844,6 +2966,8 @@ class _LibraryScreenState extends State<LibraryScreen> {
       compact: compact,
       hasNowPlayingPanel: hasNowPlayingPanel,
       title: title,
+      accentColor: _appPalette.primary,
+      secondaryColor: _appPalette.secondary,
       playlistView: _playlistView,
       trackCount: tracks.length,
       onCreatePlaylist: _createPlaylist,
@@ -2950,47 +3074,46 @@ class _LibraryScreenState extends State<LibraryScreen> {
         onPlayStation: (artist) => unawaited(_playArtistStation(artist)),
         onNavigate: _navigate,
       ),
-      'Explorar' => _exploreShowingTrack
-          ? ExplorePage(
-              config: config,
-              track: _currentLocalTrack,
-              onlineArtwork: _playingOnlineTrack?.thumbnail,
-              spectrum: _exploreSpectrum,
-              onBackToDiscoveries: _returnToExploreDiscoveries,
-              recommendations: _exploreFeed.recommendations,
-              recommendationsLoading: _exploreRecommendationsLoading,
-              onPlayRecommendation: (recommendation) =>
-                  unawaited(_playExploreRecommendation(recommendation)),
-              onPrevious: () => unawaited(_skipMiniPlayerTrack(-1)),
-              onNext: () => unawaited(_skipMiniPlayerTrack(1)),
-              canGoPrevious:
-                  _playingOnlineTrack != null
-                      ? _onlineQueueIndex > 0
-                      : (_currentIndex ?? 0) > 0,
-              canGoNext:
-                  _playingOnlineTrack != null
-                      ? _onlineQueueIndex >= 0 &&
-                            _onlineQueueIndex < _onlinePlaybackQueue.length - 1
-                      : _currentIndex != null &&
-                            _currentIndex! < _queue.length - 1,
-            )
-          : ExploreOnlinePage(
-              config: config,
-              recommendations: _exploreFeed.recommendations,
-              seedArtists: _exploreFeed.seeds,
-              loading: _exploreRecommendationsLoading,
-              error: _exploreRecommendationError,
-              onRefresh: () => unawaited(
-                _loadExploreRecommendations(refresh: true),
+      'Explorar' =>
+        _exploreShowingTrack
+            ? ExplorePage(
+                config: config,
+                track: _currentLocalTrack,
+                onlineArtwork: _playingOnlineTrack?.thumbnail,
+                spectrum: _exploreSpectrum,
+                onBackToDiscoveries: _returnToExploreDiscoveries,
+                recommendations: _exploreFeed.recommendations,
+                recommendationsLoading: _exploreRecommendationsLoading,
+                onPlayRecommendation: (recommendation) =>
+                    unawaited(_playExploreRecommendation(recommendation)),
+                onPrevious: () => unawaited(_skipMiniPlayerTrack(-1)),
+                onNext: () => unawaited(_skipMiniPlayerTrack(1)),
+                canGoPrevious: _playingOnlineTrack != null
+                    ? _onlineQueueIndex > 0
+                    : (_currentIndex ?? 0) > 0,
+                canGoNext: _playingOnlineTrack != null
+                    ? _onlineQueueIndex >= 0 &&
+                          _onlineQueueIndex < _onlinePlaybackQueue.length - 1
+                    : _currentIndex != null &&
+                          _currentIndex! < _queue.length - 1,
+              )
+            : ExploreOnlinePage(
+                config: config,
+                recommendations: _exploreFeed.recommendations,
+                seedArtists: _exploreFeed.seeds,
+                loading: _exploreRecommendationsLoading,
+                error: _exploreRecommendationError,
+                onRefresh: () =>
+                    unawaited(_loadExploreRecommendations(refresh: true)),
+                onPlay: (recommendation) =>
+                    unawaited(_playExploreRecommendation(recommendation)),
               ),
-              onPlay: (recommendation) =>
-                  unawaited(_playExploreRecommendation(recommendation)),
-            ),
       'Tu música' => MusicPage(config: config),
       'Favoritos' => FavoritesPage(config: config),
       'Carpetas' => MiddleContentPanel(
         section: _section,
         config: config,
+        showHeader: false,
         body: _foldersPanel(),
       ),
       'Álbumes' => AlbumsPage(
@@ -3037,6 +3160,8 @@ class _LibraryScreenState extends State<LibraryScreen> {
         onPlayChartTrack: (track, queue) async {
           await _playHomeChartTrack(track, chart: queue, session: 'world');
         },
+        onAddChartToPlaylist: _addChartTrackToPlaylist,
+        onToggleChartFavorite: _toggleChartFavorite,
       ),
       'Playlists' => PlaylistsPage(
         config: config,
@@ -3390,7 +3515,11 @@ class _LibraryScreenState extends State<LibraryScreen> {
                           ? Icons.equalizer_rounded
                           : Icons.play_arrow_rounded,
                       color: playing
-                          ? (neutralHome ? const Color(0xFFF4F3EF) : _cyan)
+                          ? (neutralHome
+                                ? const Color(0xFFF4F3EF)
+                                : (plainMusicList
+                                      ? _appPalette.primary
+                                      : _cyan))
                           : _muted,
                       size: 19,
                     ),
@@ -3410,7 +3539,9 @@ class _LibraryScreenState extends State<LibraryScreen> {
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(
                       fontSize: plainMusicList ? 14 : 12,
-                      color: playing && !neutralHome ? _cyan : Colors.white,
+                      color: playing && !neutralHome
+                          ? (plainMusicList ? _appPalette.primary : _cyan)
+                          : Colors.white,
                       fontWeight: FontWeight.w600,
                     ),
                   ),
@@ -4103,81 +4234,236 @@ class _LibraryScreenState extends State<LibraryScreen> {
   }
 
   Widget _foldersPanel() {
-    if (_folders.isEmpty) {
-      return Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text(
-            'Todavía no has añadido carpetas.',
-            style: TextStyle(color: _muted, fontSize: 13),
-          ),
-          const SizedBox(height: 16),
-          FilledButton.tonalIcon(
-            onPressed: _importFolder,
-            icon: const Icon(Icons.create_new_folder_outlined),
-            label: const Text('Añadir carpeta'),
-          ),
-        ],
-      );
-    }
-
+    final importedFolders = _folders;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Row(
-          children: [
-            const Expanded(
-              child: Text(
-                'Carpetas importadas',
-                style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
-              ),
+        CollectionHero(
+          eyebrow: 'TU BIBLIOTECA',
+          title: 'Carpetas',
+          description: importedFolders.isEmpty
+              ? 'Añade ubicaciones de música para organizar tu colección local.'
+              : '${_tracks.length} canciones disponibles desde tus ubicaciones.',
+          icon: Icons.folder_copy_rounded,
+          accent: _appPalette.primary,
+          secondaryAccent: _appPalette.secondary,
+          count: importedFolders.length,
+          countLabel: importedFolders.length == 1 ? 'carpeta' : 'carpetas',
+          action: FilledButton.tonalIcon(
+            onPressed: _importFolder,
+            icon: Icon(Icons.create_new_folder_outlined, size: 18),
+            label: const Text('Añadir carpeta'),
+            style: FilledButton.styleFrom(
+              backgroundColor: _appPalette.primary.withValues(alpha: .13),
+              foregroundColor: _appPalette.primary,
+              minimumSize: const Size(44, 44),
+              padding: const EdgeInsets.symmetric(horizontal: 15),
+              textStyle: TextStyle(fontWeight: FontWeight.w700, fontSize: 12),
             ),
-            FilledButton.tonalIcon(
-              onPressed: _importFolder,
-              icon: const Icon(Icons.create_new_folder_outlined, size: 17),
-              label: const Text('Añadir carpeta'),
-            ),
-          ],
+          ),
         ),
-        const SizedBox(height: 14),
-        ..._folders.map((folder) {
-          final separator = Platform.pathSeparator;
-          final prefix = folder.endsWith(separator)
-              ? folder
-              : '$folder$separator';
-          final count = _tracks
-              .where(
-                (track) =>
-                    track.path.toLowerCase().startsWith(prefix.toLowerCase()),
-              )
-              .length;
-          final parts = folder.split(separator);
-          final name = parts.isEmpty || parts.last.isEmpty
-              ? folder
-              : parts.last;
-          return Container(
-            margin: const EdgeInsets.only(bottom: 9),
+        const SizedBox(height: 24),
+        if (importedFolders.isEmpty)
+          Container(
+            padding: const EdgeInsets.all(22),
             decoration: BoxDecoration(
-              color: _panel,
-              borderRadius: BorderRadius.circular(13),
-              border: Border.all(color: Colors.white.withValues(alpha: .06)),
+              color: _panel.withValues(alpha: .82),
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(color: Colors.white.withValues(alpha: .07)),
             ),
-            child: ListTile(
-              leading: const Icon(Icons.folder_outlined, color: _muted),
-              title: Text(name, maxLines: 1, overflow: TextOverflow.ellipsis),
-              subtitle: Text(
-                folder,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(color: _muted, fontSize: 11),
-              ),
-              trailing: Text(
-                '$count ${count == 1 ? 'canción' : 'canciones'}',
-                style: const TextStyle(color: _muted, fontSize: 11),
-              ),
+            child: Row(
+              children: [
+                Container(
+                  width: 48,
+                  height: 48,
+                  decoration: BoxDecoration(
+                    color: _appPalette.primary.withValues(alpha: .08),
+                    borderRadius: BorderRadius.circular(15),
+                  ),
+                  child: Icon(
+                    Icons.folder_open_rounded,
+                    color: _appPalette.primary,
+                  ),
+                ),
+                const SizedBox(width: 15),
+                const Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Tu biblioteca local está lista para crecer',
+                        style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      SizedBox(height: 5),
+                      Text(
+                        'Al añadir una carpeta, SoundNeed encontrará sus canciones y las reunirá aquí.',
+                        style: TextStyle(
+                          color: _muted,
+                          fontSize: 12,
+                          height: 1.4,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
             ),
-          );
-        }),
+          )
+        else ...[
+          Row(
+            children: [
+              Container(
+                width: 3,
+                height: 22,
+                decoration: BoxDecoration(
+                  color: _appPalette.primary,
+                  borderRadius: BorderRadius.circular(4),
+                ),
+              ),
+              const SizedBox(width: 11),
+              const Text(
+                'Ubicaciones importadas',
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final columns = constraints.maxWidth >= 920 ? 2 : 1;
+              const gap = 14.0;
+              final width =
+                  (constraints.maxWidth - gap * (columns - 1)) / columns;
+              return Wrap(
+                spacing: gap,
+                runSpacing: gap,
+                children: importedFolders
+                    .map((folder) {
+                      final separator = Platform.pathSeparator;
+                      final prefix = folder.endsWith(separator)
+                          ? folder
+                          : folder + separator;
+                      final count = _tracks
+                          .where(
+                            (track) => track.path.toLowerCase().startsWith(
+                              prefix.toLowerCase(),
+                            ),
+                          )
+                          .length;
+                      final parts = folder.split(separator);
+                      final name = parts.isEmpty || parts.last.isEmpty
+                          ? folder
+                          : parts.last;
+                      return SizedBox(
+                        width: width,
+                        child: Container(
+                          padding: const EdgeInsets.all(16),
+                          decoration: BoxDecoration(
+                            gradient: LinearGradient(
+                              begin: Alignment.topLeft,
+                              end: Alignment.bottomRight,
+                              colors: [
+                                Color.lerp(_panel, _appPalette.primary, .055)!,
+                                Color.lerp(
+                                  _panel,
+                                  _appPalette.secondary,
+                                  .035,
+                                )!,
+                              ],
+                            ),
+                            borderRadius: BorderRadius.circular(18),
+                            border: Border.all(
+                              color: Colors.white.withValues(alpha: .08),
+                            ),
+                          ),
+                          child: Row(
+                            children: [
+                              Container(
+                                width: 48,
+                                height: 48,
+                                decoration: BoxDecoration(
+                                  color: _appPalette.primary.withValues(
+                                    alpha: .09,
+                                  ),
+                                  borderRadius: BorderRadius.circular(14),
+                                  border: Border.all(
+                                    color: _appPalette.primary.withValues(
+                                      alpha: .16,
+                                    ),
+                                  ),
+                                ),
+                                child: Icon(
+                                  Icons.folder_rounded,
+                                  color: _appPalette.primary,
+                                  size: 23,
+                                ),
+                              ),
+                              const SizedBox(width: 14),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      name,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: TextStyle(
+                                        fontSize: 13,
+                                        fontWeight: FontWeight.w700,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 5),
+                                    Text(
+                                      folder,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: TextStyle(
+                                        color: _muted,
+                                        fontSize: 10.5,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              const SizedBox(width: 10),
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 10,
+                                  vertical: 7,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: _appPalette.primary.withValues(
+                                    alpha: .08,
+                                  ),
+                                  borderRadius: BorderRadius.circular(12),
+                                  border: Border.all(
+                                    color: _appPalette.primary.withValues(
+                                      alpha: .16,
+                                    ),
+                                  ),
+                                ),
+                                child: Text(
+                                  '$count ${count == 1 ? "canción" : "canciones"}',
+                                  style: TextStyle(
+                                    color: _appPalette.primary,
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      );
+                    })
+                    .toList(growable: false),
+              );
+            },
+          ),
+        ],
       ],
     );
   }

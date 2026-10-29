@@ -77,21 +77,21 @@ class SoundNeedSidebar extends StatelessWidget {
 
                   _navItem(
                     context,
-                    CupertinoIcons.music_note_list,
+                    Icons.library_music_rounded,
                     'Tu música',
                   ),
-                  _navItem(context, Icons.folder_open_rounded, 'Carpetas'),
+                  _navItem(context, Icons.folder_rounded, 'Carpetas'),
 
                   const SizedBox(height: 25),
 
                   _buildSectionLabel('EXPLORAR'),
                   const SizedBox(height: 10),
 
-                  _navItem(context, CupertinoIcons.circle_grid_3x3, 'Álbumes'),
-                  _navItem(context, CupertinoIcons.person_2, 'Artistas'),
+                  _navItem(context, Icons.album_rounded, 'Álbumes'),
+                  _navItem(context, Icons.mic_rounded, 'Artistas'),
                   _navItem(
                     context,
-                    CupertinoIcons.music_note_list,
+                    Icons.queue_music_rounded,
                     'Playlists',
                   ),
 
@@ -137,24 +137,46 @@ class SoundNeedSidebar extends StatelessWidget {
         padding: const EdgeInsets.only(bottom: 8),
         child: Center(
           child: Container(
-            width: 24,
-            height: 1,
-            color: _border.withValues(alpha: 0.9),
+            width: 28,
+            height: 2,
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                colors: [
+                  _cyan.withValues(alpha: 0.4),
+                  _cyan.withValues(alpha: 0.8),
+                  _cyan.withValues(alpha: 0.4),
+                ],
+              ),
+              borderRadius: BorderRadius.circular(2),
+            ),
           ),
         ),
       );
     }
 
     return Padding(
-      padding: const EdgeInsets.only(left: 12, bottom: 2),
-      child: Text(
-        label,
-        style: TextStyle(
-          color: mutedColor.withValues(alpha: 0.85),
-          fontSize: 9,
-          letterSpacing: 1.65,
-          fontWeight: FontWeight.w700,
-        ),
+      padding: const EdgeInsets.only(left: 12, bottom: 3),
+      child: Row(
+        children: [
+          Container(
+            width: 4,
+            height: 4,
+            decoration: BoxDecoration(
+              color: _cyan.withValues(alpha: 0.6),
+              shape: BoxShape.circle,
+            ),
+          ),
+          const SizedBox(width: 8),
+          Text(
+            label,
+            style: TextStyle(
+              color: _cyan.withValues(alpha: 0.75),
+              fontSize: 9,
+              letterSpacing: 1.8,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -235,8 +257,22 @@ class _SidebarPanelHeaderState extends State<_SidebarPanelHeader> {
                         width: 3,
                         height: 17,
                         decoration: BoxDecoration(
-                          color: _cyan.withValues(alpha: 0.85),
+                          gradient: LinearGradient(
+                            begin: Alignment.topCenter,
+                            end: Alignment.bottomCenter,
+                            colors: [
+                              _cyan.withValues(alpha: 0.5),
+                              _cyan,
+                              _cyan.withValues(alpha: 0.5),
+                            ],
+                          ),
                           borderRadius: BorderRadius.circular(4),
+                          boxShadow: [
+                            BoxShadow(
+                              color: _cyan.withValues(alpha: 0.15),
+                              blurRadius: 6,
+                            ),
+                          ],
                         ),
                       ),
                       const SizedBox(width: 10),
@@ -317,32 +353,61 @@ class _SidebarNavButtonState extends State<_SidebarNavButton> {
       onEnter: (_) => setState(() => _hovered = true),
       onExit: (_) => setState(() => _hovered = false),
       child: AnimatedContainer(
-        duration: const Duration(milliseconds: 135),
+        duration: const Duration(milliseconds: 180),
         curve: Curves.easeOutCubic,
-        height: small ? 34 : 46,
+        height: small ? 36 : 48,
         decoration: BoxDecoration(
+          gradient: active
+              ? LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [
+                    selectedFill.withValues(alpha: 0.12),
+                    selectedFill.withValues(alpha: 0.06),
+                  ],
+                )
+              : null,
           color: active
-              ? selectedFill.withValues(alpha: 0.07)
-              : _hover.withValues(alpha: _hovered ? 0.72 : 0),
-          borderRadius: BorderRadius.circular(14),
+              ? null
+              : _hover.withValues(alpha: _hovered ? 0.65 : 0),
+          borderRadius: BorderRadius.circular(15),
           border: Border.all(
             color: active
-                ? selectedFill.withValues(alpha: 0.12)
-                : Colors.transparent,
-            width: 0.8,
+                ? selectedFill.withValues(alpha: 0.18)
+                : _hovered
+                    ? Colors.white.withValues(alpha: 0.08)
+                    : Colors.transparent,
+            width: active ? 1 : 0.8,
           ),
+          boxShadow: active
+              ? [
+                  BoxShadow(
+                    color: selectedFill.withValues(alpha: 0.08),
+                    blurRadius: 18,
+                    spreadRadius: -6,
+                  ),
+                ]
+              : _hovered
+                  ? [
+                      BoxShadow(
+                        color: Colors.black.withValues(alpha: 0.12),
+                        blurRadius: 12,
+                        spreadRadius: -4,
+                      ),
+                    ]
+                  : const [],
         ),
         child: Material(
           color: Colors.transparent,
           child: InkWell(
-            borderRadius: BorderRadius.circular(14),
+            borderRadius: BorderRadius.circular(15),
             onTap: widget.onTap,
             hoverColor: Colors.transparent,
-            splashColor: Colors.white.withValues(alpha: 0.07),
+            splashColor: selectedFill.withValues(alpha: 0.1),
             highlightColor: Colors.transparent,
             child: Padding(
               padding: EdgeInsets.symmetric(
-                horizontal: compact ? 0 : (small ? 10 : 11),
+                horizontal: compact ? 0 : (small ? 10 : 12),
               ),
               child: Row(
                 mainAxisAlignment: compact
@@ -350,32 +415,94 @@ class _SidebarNavButtonState extends State<_SidebarNavButton> {
                     : MainAxisAlignment.start,
                 children: [
                   if (active && !compact && !small)
-                    Container(
-                      width: 2.5,
-                      height: 18,
-                      margin: const EdgeInsets.only(right: 9),
+                    AnimatedContainer(
+                      duration: const Duration(milliseconds: 200),
+                      width: 2.8,
+                      height: 19,
+                      margin: const EdgeInsets.only(right: 10),
                       decoration: BoxDecoration(
-                        color: Colors.white,
-                        borderRadius: BorderRadius.circular(3),
+                        gradient: LinearGradient(
+                          begin: Alignment.topCenter,
+                          end: Alignment.bottomCenter,
+                          colors: [
+                            selectedFill.withValues(alpha: 0.5),
+                            selectedFill,
+                            selectedFill.withValues(alpha: 0.5),
+                          ],
+                        ),
+                        borderRadius: BorderRadius.circular(4),
                         boxShadow: [
                           BoxShadow(
-                            color: Colors.white.withValues(alpha: 0.12),
-                            blurRadius: 5,
+                            color: selectedFill.withValues(alpha: 0.15),
+                            blurRadius: 6,
                           ),
                         ],
                       ),
                     ),
                   AnimatedScale(
-                    scale: _hovered && !active ? 1.05 : 1,
-                    duration: const Duration(milliseconds: 130),
-                    child: Icon(
-                      widget.icon,
-                      size: small ? 12 : 23,
-                      color: active || _hovered ? Colors.white : _muted,
-                    ),
+                    scale: _hovered && !active ? 1.08 : 1,
+                    duration: const Duration(milliseconds: 160),
+                    curve: Curves.easeOutBack,
+                    child: small
+                        ? Container(
+                            width: 18,
+                            height: 18,
+                            decoration: BoxDecoration(
+                              color: active
+                                  ? selectedFill.withValues(alpha: 0.12)
+                                  : Colors.transparent,
+                              borderRadius: BorderRadius.circular(5),
+                            ),
+                            child: Icon(
+                              widget.icon,
+                              size: 13,
+                              color: active
+                                  ? selectedFill
+                                  : _hovered
+                                      ? Colors.white.withValues(alpha: 0.9)
+                                      : _muted,
+                            ),
+                          )
+                        : Container(
+                            width: 38,
+                            height: 38,
+                            decoration: BoxDecoration(
+                              gradient: active
+                                  ? LinearGradient(
+                                      begin: Alignment.topLeft,
+                                      end: Alignment.bottomRight,
+                                      colors: [
+                                        selectedFill.withValues(alpha: 0.18),
+                                        selectedFill.withValues(alpha: 0.08),
+                                      ],
+                                    )
+                                  : null,
+                              color: active
+                                  ? null
+                                  : _hovered
+                                  ? Colors.white.withValues(alpha: 0.06)
+                                  : Colors.transparent,
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(
+                                color: active
+                                    ? selectedFill.withValues(alpha: 0.2)
+                                    : Colors.transparent,
+                                width: 1,
+                              ),
+                            ),
+                            child: Icon(
+                              widget.icon,
+                              size: 23,
+                              color: active
+                                  ? selectedFill
+                                  : _hovered
+                                  ? Colors.white.withValues(alpha: 0.95)
+                                  : _muted,
+                            ),
+                          ),
                   ),
                   if (!compact) ...[
-                    SizedBox(width: small ? 9 : 11),
+                    SizedBox(width: small ? 10 : 12),
                     Expanded(
                       child: Text(
                         widget.label,
@@ -385,23 +512,30 @@ class _SidebarNavButtonState extends State<_SidebarNavButton> {
                           color: active
                               ? Colors.white
                               : _hovered
-                              ? const Color(0xFFE0E0E8)
-                              : Colors.white70,
-                          fontSize: small ? 11 : 12,
-                          letterSpacing: small ? 0 : 0.1,
+                              ? const Color(0xFFE8E8F0)
+                              : Colors.white.withValues(alpha: 0.8),
+                          fontSize: small ? 11.5 : 12.5,
+                          letterSpacing: small ? 0.1 : 0.15,
                           fontWeight: active
-                              ? FontWeight.w600
-                              : FontWeight.w400,
+                              ? FontWeight.w700
+                              : FontWeight.w500,
                         ),
                       ),
                     ),
                     if (active && small)
-                      Container(
-                        width: 5,
-                        height: 5,
+                      AnimatedContainer(
+                        duration: const Duration(milliseconds: 200),
+                        width: 5.5,
+                        height: 5.5,
                         decoration: BoxDecoration(
-                          color: Colors.white,
+                          color: selectedFill,
                           shape: BoxShape.circle,
+                          boxShadow: [
+                            BoxShadow(
+                              color: selectedFill.withValues(alpha: 0.3),
+                              blurRadius: 4,
+                            ),
+                          ],
                         ),
                       ),
                   ],

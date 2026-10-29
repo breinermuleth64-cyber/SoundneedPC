@@ -35,12 +35,15 @@ class AlbumsPage extends StatelessWidget {
   Widget build(BuildContext context) => MiddleContentPanel(
     section: 'Álbumes',
     config: config,
+    showHeader: loading,
     body: loading
         ? config.body
         : MediaCollectionBrowser(
             tracks: tracks,
             showArtists: false,
             compact: compact,
+            accentColor: config.accentColor,
+            secondaryAccent: config.secondaryColor,
             currentTrackPath: currentTrackPath,
             isPlaying: isPlaying,
             favoritePaths: favoritePaths,

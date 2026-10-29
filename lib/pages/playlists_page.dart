@@ -7,14 +7,14 @@ import '../models/track.dart';
 import '../services/playlist_library_service.dart';
 import '../services/playlist_search_service.dart';
 import '../widgets/library_content.dart';
+import '../widgets/collection_hero.dart';
 import '../widgets/middle_content_panel.dart';
 import '../widgets/playlist_track_picker.dart';
 
 typedef PlayPlaylistTracks = Future<void> Function(List<Track>, int, bool);
 typedef AddTracksToPlaylist = Future<void> Function(String, List<Track>);
 typedef RemovePlaylistTrack = void Function(String, Track);
-const _cyan = Color(0xFF83E8FF),
-    _panel = Color(0xFF151522),
+const _panel = Color(0xFF151522),
     _raised = Color(0xFF1D1D2B),
     _muted = Color(0xFF9292A5),
     _like = Color(0xFFFF5378);
@@ -48,6 +48,8 @@ class PlaylistsPage extends StatefulWidget {
 }
 
 class _PlaylistsPageState extends State<PlaylistsPage> {
+  Color get _cyan => widget.config.accentColor;
+  Color get _secondary => widget.config.secondaryColor;
   bool _showLiked = false;
   String _query = '', _libraryQuery = '', _sort = 'added';
   final _search = TextEditingController();
@@ -98,7 +100,7 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
           decoration: InputDecoration(
             hintText: 'Buscar playlist, canción o artista',
             hintStyle: const TextStyle(color: _muted, fontSize: 12),
-            prefixIcon: const Icon(Icons.search_rounded, color: _cyan),
+            prefixIcon: Icon(Icons.search_rounded, color: _cyan),
             suffixIcon: _libraryQuery.isEmpty
                 ? null
                 : IconButton(
@@ -107,21 +109,21 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
                       _librarySearch.clear();
                       setState(() => _libraryQuery = '');
                     },
-                    icon: const Icon(Icons.close_rounded, color: _muted),
+                    icon: Icon(Icons.close_rounded, color: _muted),
                   ),
             filled: true,
             fillColor: _panel,
             border: OutlineInputBorder(
               borderRadius: BorderRadius.circular(16),
-              borderSide: const BorderSide(color: Color(0xFF2B2B3B)),
+              borderSide: BorderSide(color: Color(0xFF2B2B3B)),
             ),
             enabledBorder: OutlineInputBorder(
               borderRadius: BorderRadius.circular(16),
-              borderSide: const BorderSide(color: Color(0xFF2B2B3B)),
+              borderSide: BorderSide(color: Color(0xFF2B2B3B)),
             ),
             focusedBorder: OutlineInputBorder(
               borderRadius: BorderRadius.circular(16),
-              borderSide: const BorderSide(color: _cyan, width: 1.2),
+              borderSide: BorderSide(color: _cyan, width: 1.2),
             ),
           ),
         ),
@@ -222,89 +224,27 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
     );
   }
 
-  Widget _libraryHero(int total) => Container(
-    padding: const EdgeInsets.all(23),
-    decoration: BoxDecoration(
-      gradient: const LinearGradient(
-        begin: Alignment.topLeft,
-        end: Alignment.bottomRight,
-        colors: [Color(0xFF17424D), Color(0xFF18202D), Color(0xFF171722)],
+  Widget _libraryHero(int total) => CollectionHero(
+    eyebrow: 'TU BIBLIOTECA',
+    title: 'Playlists',
+    description: 'Colecciones para cada momento y estado de ánimo.',
+    icon: Icons.queue_music_rounded,
+    count: total,
+    countLabel: 'colecciones',
+    compact: widget.config.compact,
+    accent: widget.config.accentColor,
+    secondaryAccent: widget.config.secondaryColor,
+    action: FilledButton.icon(
+      onPressed: widget.config.onCreatePlaylist,
+      icon: Icon(Icons.add_rounded),
+      label: Text('Nueva playlist'),
+      style: FilledButton.styleFrom(
+        backgroundColor: widget.config.accentColor,
+        foregroundColor: Colors.black,
+        minimumSize: const Size(44, 44),
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        textStyle: const TextStyle(fontWeight: FontWeight.w700, fontSize: 12),
       ),
-      borderRadius: BorderRadius.circular(23),
-      border: Border.all(color: _cyan.withValues(alpha: .26)),
-      boxShadow: [
-        BoxShadow(
-          color: _cyan.withValues(alpha: .07),
-          blurRadius: 26,
-          spreadRadius: -8,
-        ),
-      ],
-    ),
-    child: Row(
-      children: [
-        Container(
-          width: 64,
-          height: 64,
-          decoration: BoxDecoration(
-            color: _cyan.withValues(alpha: .13),
-            borderRadius: BorderRadius.circular(20),
-            border: Border.all(color: _cyan.withValues(alpha: .2)),
-          ),
-          child: const Icon(Icons.queue_music_rounded, color: _cyan, size: 32),
-        ),
-        const SizedBox(width: 17),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text(
-                'TU MÚSICA',
-                style: TextStyle(
-                  color: _cyan,
-                  fontSize: 10,
-                  fontWeight: FontWeight.w800,
-                  letterSpacing: 1.8,
-                ),
-              ),
-              const SizedBox(height: 6),
-              const Text(
-                'Tus playlists',
-                style: TextStyle(
-                  fontSize: 25,
-                  fontWeight: FontWeight.w800,
-                  letterSpacing: -.5,
-                ),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                '$total colecciones listas para sonar',
-                style: const TextStyle(color: Colors.white70, fontSize: 12),
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(width: 12),
-        Tooltip(
-          message: 'Crear playlist',
-          child: Material(
-            color: Colors.white,
-            shape: const CircleBorder(),
-            child: InkWell(
-              customBorder: const CircleBorder(),
-              onTap: widget.config.onCreatePlaylist,
-              child: const SizedBox(
-                width: 52,
-                height: 52,
-                child: Icon(
-                  Icons.add_rounded,
-                  color: Color(0xFF10131A),
-                  size: 30,
-                ),
-              ),
-            ),
-          ),
-        ),
-      ],
     ),
   );
 
@@ -317,39 +257,121 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
     bool liked = false,
     Widget? menu,
   }) {
-    final accent = liked ? _like : _cyan;
+    final accent = liked ? _like : widget.config.accentColor;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Material(
           color: _raised,
-          borderRadius: BorderRadius.circular(18),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(20),
+            side: BorderSide(color: accent.withValues(alpha: .15)),
+          ),
           clipBehavior: Clip.antiAlias,
           child: InkWell(
             onTap: onTap,
+            hoverColor: accent.withValues(alpha: .05),
+            splashColor: accent.withValues(alpha: .1),
             child: AspectRatio(
               aspectRatio: 1,
               child: Stack(
                 fit: StackFit.expand,
                 children: [
                   _mosaic(songs, liked: liked),
-                  if (menu != null) Positioned(top: 8, right: 8, child: menu),
+                  const DecoratedBox(
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        begin: Alignment.topCenter,
+                        end: Alignment.bottomCenter,
+                        colors: [
+                          Color(0x66080A10),
+                          Colors.transparent,
+                          Color(0x28080A10),
+                        ],
+                        stops: [0, .26, 1],
+                      ),
+                    ),
+                  ),
                   Positioned(
-                    right: 10,
-                    bottom: 10,
+                    left: 10,
+                    top: 10,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 9,
+                        vertical: 6,
+                      ),
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(
+                          colors: [
+                            const Color(0xB80D1018),
+                            const Color(0xA80D1018),
+                          ],
+                        ),
+                        borderRadius: BorderRadius.circular(22),
+                        border: Border.all(
+                          color: Colors.white.withValues(alpha: 0.16),
+                          width: 0.8,
+                        ),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withValues(alpha: 0.2),
+                            blurRadius: 8,
+                            offset: const Offset(0, 2),
+                          ),
+                        ],
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            liked
+                                ? Icons.favorite_rounded
+                                : Icons.queue_music_rounded,
+                            color: liked ? _like : _cyan,
+                            size: 12,
+                          ),
+                          const SizedBox(width: 5),
+                          Text(
+                            liked ? 'TUS FAVORITOS' : 'PLAYLIST',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 8,
+                              fontWeight: FontWeight.w800,
+                              letterSpacing: 0.7,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  if (menu != null)
+                    Positioned(
+                      top: 6,
+                      right: 6,
+                      child: Material(
+                        color: const Color(0xB80D1018),
+                        shape: const CircleBorder(),
+                        child: menu,
+                      ),
+                    ),
+                  Positioned(
+                    right: 11,
+                    bottom: 11,
                     child: Material(
-                      color: Colors.white,
+                      color: onPlay == null ? const Color(0xDD20202E) : accent,
                       shape: const CircleBorder(),
+                      elevation: onPlay == null ? 0 : 4,
+                      shadowColor: Colors.black.withValues(alpha: 0.3),
                       child: InkWell(
                         customBorder: const CircleBorder(),
                         onTap: onPlay,
                         child: SizedBox(
-                          width: 44,
-                          height: 44,
+                          width: 48,
+                          height: 48,
                           child: Icon(
                             Icons.play_arrow_rounded,
-                            color: onPlay == null ? _muted : accent,
-                            size: 29,
+                            color: onPlay == null ? _muted : Colors.black,
+                            size: 30,
                           ),
                         ),
                       ),
@@ -360,19 +382,36 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
             ),
           ),
         ),
-        const SizedBox(height: 10),
+        const SizedBox(height: 11),
         Text(
           title,
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
-          style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w800),
+          style: const TextStyle(
+            color: Colors.white,
+            fontSize: 15.5,
+            fontWeight: FontWeight.w800,
+            letterSpacing: -0.15,
+          ),
         ),
-        const SizedBox(height: 4),
-        Text(
-          subtitle,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: const TextStyle(color: _muted, fontSize: 11),
+        const SizedBox(height: 5),
+        Row(
+          children: [
+            Icon(
+              Icons.music_note_rounded,
+              color: accent.withValues(alpha: 0.85),
+              size: 13,
+            ),
+            const SizedBox(width: 5),
+            Expanded(
+              child: Text(
+                subtitle,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(color: _muted, fontSize: 11.5),
+              ),
+            ),
+          ],
         ),
       ],
     );
@@ -446,59 +485,108 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
           );
   }
 
-  Widget _placeholder() => const ColoredBox(
+  Widget _placeholder() => ColoredBox(
     color: Color(0xFF292936),
     child: Center(
       child: Icon(Icons.music_note_rounded, color: _cyan, size: 28),
     ),
   );
   Widget _surpriseMix() => Container(
-    padding: const EdgeInsets.symmetric(horizontal: 19, vertical: 17),
+    padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 18),
     decoration: BoxDecoration(
-      gradient: const LinearGradient(
-        colors: [Color(0xFF253D45), Color(0xFF202131)],
+      gradient: LinearGradient(
+        begin: Alignment.topLeft,
+        end: Alignment.bottomRight,
+        colors: [
+          Color.lerp(const Color(0xFF171923), _cyan, .22)!,
+          Color.lerp(const Color(0xFF20202E), _secondary, .10)!,
+        ],
       ),
-      borderRadius: BorderRadius.circular(19),
-      border: Border.all(color: _cyan.withValues(alpha: .19)),
+      borderRadius: BorderRadius.circular(21),
+      border: Border.all(color: _cyan.withValues(alpha: 0.25), width: 1.1),
+      boxShadow: [
+        BoxShadow(
+          color: _cyan.withValues(alpha: 0.08),
+          blurRadius: 20,
+          spreadRadius: -6,
+        ),
+      ],
     ),
     child: Row(
       children: [
         Container(
-          width: 46,
-          height: 46,
+          width: 50,
+          height: 50,
           decoration: BoxDecoration(
-            color: _cyan.withValues(alpha: .13),
-            borderRadius: BorderRadius.circular(15),
+            gradient: LinearGradient(
+              colors: [
+                _cyan.withValues(alpha: 0.22),
+                _secondary.withValues(alpha: 0.12),
+              ],
+            ),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: _cyan.withValues(alpha: 0.25)),
           ),
-          child: const Icon(Icons.shuffle_rounded, color: _cyan),
+          child: Icon(Icons.shuffle_rounded, color: _cyan, size: 26),
         ),
-        const SizedBox(width: 14),
+        const SizedBox(width: 16),
         const Expanded(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
                 'Mezcla sorpresa',
-                style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800),
+                style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: -0.2,
+                ),
               ),
               SizedBox(height: 4),
               Text(
                 'Una combinación para descubrir tu música',
-                style: TextStyle(color: _muted, fontSize: 11),
+                style: TextStyle(color: _muted, fontSize: 11.5),
               ),
             ],
           ),
         ),
-        IconButton.filled(
-          tooltip: 'Reproducir mezcla sorpresa',
-          onPressed: widget.tracks.isEmpty
-              ? null
-              : () => widget.onPlayTracks(widget.tracks, 0, true),
-          style: IconButton.styleFrom(
-            backgroundColor: Colors.white,
-            foregroundColor: const Color(0xFF11111A),
+        Tooltip(
+          message: 'Reproducir mezcla sorpresa',
+          child: Material(
+            color: Colors.white,
+            shape: const CircleBorder(),
+            elevation: 0,
+            child: InkWell(
+              customBorder: const CircleBorder(),
+              onTap: widget.tracks.isEmpty
+                  ? null
+                  : () => widget.onPlayTracks(widget.tracks, 0, true),
+              child: Container(
+                width: 48,
+                height: 48,
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: [_cyan, Colors.white.withValues(alpha: 0.95)],
+                  ),
+                  shape: BoxShape.circle,
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.white.withValues(alpha: 0.15),
+                      blurRadius: 16,
+                      spreadRadius: -4,
+                    ),
+                  ],
+                ),
+                child: Icon(
+                  Icons.play_arrow_rounded,
+                  color: Color(0xFF11111A),
+                  size: 26,
+                ),
+              ),
+            ),
           ),
-          icon: const Icon(Icons.play_arrow_rounded),
         ),
       ],
     ),
@@ -509,7 +597,7 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
     final liked = !_showPlaylist && _showLiked;
     final title = liked ? 'Me gusta' : playlist!;
     final songs = liked ? _likedSongs() : _songs(playlist);
-    final accent = liked ? _like : _cyan;
+    final accent = liked ? _like : widget.config.accentColor;
     final duration = songs.fold<int>(
       0,
       (sum, track) => sum + (track.durationMs ?? 0),
@@ -593,7 +681,7 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
           decoration: InputDecoration(
             hintText: 'Buscar en $title',
             hintStyle: const TextStyle(color: _muted, fontSize: 12),
-            prefixIcon: const Icon(Icons.search_rounded, color: _cyan),
+            prefixIcon: Icon(Icons.search_rounded, color: _cyan),
             suffixIcon: _query.isEmpty
                 ? null
                 : IconButton(
@@ -601,7 +689,7 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
                       _search.clear();
                       setState(() => _query = '');
                     },
-                    icon: const Icon(Icons.close_rounded, color: _muted),
+                    icon: Icon(Icons.close_rounded, color: _muted),
                   ),
             filled: true,
             fillColor: _panel,
@@ -784,14 +872,14 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
             widget.config.onOpenPlaylist('Playlists');
           }
         },
-        icon: const Icon(Icons.arrow_back_rounded, color: _cyan),
+        icon: Icon(Icons.arrow_back_rounded, color: _cyan),
       ),
       const SizedBox(width: 5),
       Expanded(
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text(
+            Text(
               'TU COLECCIÓN',
               style: TextStyle(
                 color: _cyan,
@@ -818,7 +906,7 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
             PopupMenuItem(value: 'share', child: Text('Compartir lista')),
             PopupMenuItem(value: 'delete', child: Text('Eliminar playlist')),
           ],
-          icon: const Icon(Icons.more_horiz_rounded, color: Colors.white70),
+          icon: Icon(Icons.more_horiz_rounded, color: Colors.white70),
         ),
     ],
   );
@@ -942,7 +1030,7 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
       child: Ink(
         decoration: BoxDecoration(
           gradient: primary
-              ? const LinearGradient(
+              ? LinearGradient(
                   colors: [Color(0xFFB6F5FF), _cyan, Color(0xFF56C9E6)],
                 )
               : null,
@@ -1063,7 +1151,7 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
             color: _cyan.withValues(alpha: .1),
             borderRadius: BorderRadius.circular(15),
           ),
-          child: const Icon(Icons.queue_music_rounded, color: _cyan),
+          child: Icon(Icons.queue_music_rounded, color: _cyan),
         ),
         const SizedBox(width: 14),
         Expanded(
@@ -1083,7 +1171,7 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
               if (action != null && onAction != null)
                 TextButton.icon(
                   onPressed: onAction,
-                  icon: const Icon(Icons.add_rounded, size: 16),
+                  icon: Icon(Icons.add_rounded, size: 16),
                   label: Text(action),
                 ),
             ],
@@ -1108,14 +1196,27 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
           );
   }
 
-  List<Track> _likedSongs() => widget.tracks
-      .where((track) => widget.favoritePaths.contains(track.path))
-      .toList(growable: false);
+  List<Track> _likedSongs() {
+    final local = widget.tracks
+        .where((track) => widget.favoritePaths.contains(track.path))
+        .toList(growable: false);
+    final localPaths = local.map((track) => track.path).toSet();
+    final online = widget.favoritePaths
+        .where((path) => !localPaths.contains(path))
+        .map(PlaylistLibraryService.decodeOnlineTrack)
+        .whereType<Track>()
+        .toList(growable: false);
+    return [...local, ...online];
+  }
+
   List<Track> _songs(String? name) {
     if (name == null) return const [];
     final byPath = {for (final track in widget.tracks) track.path: track};
     return (widget.playlists[name] ?? const <String>[])
-        .map((path) => byPath[path] ?? PlaylistLibraryService.decodeOnlineTrack(path))
+        .map(
+          (path) =>
+              byPath[path] ?? PlaylistLibraryService.decodeOnlineTrack(path),
+        )
         .whereType<Track>()
         .toList(growable: false);
   }
@@ -1149,21 +1250,21 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
       context: context,
       builder: (context) => AlertDialog(
         backgroundColor: _panel,
-        title: const Text('Eliminar playlist'),
+        title: Text('Eliminar playlist'),
         content: Text(
           'Se eliminará "$name". Las canciones seguirán en tu biblioteca.',
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
-            child: const Text('Cancelar'),
+            child: Text('Cancelar'),
           ),
           FilledButton(
             onPressed: () => Navigator.pop(context, true),
             style: FilledButton.styleFrom(
               backgroundColor: const Color(0xFFB9505C),
             ),
-            child: const Text('Eliminar'),
+            child: Text('Eliminar'),
           ),
         ],
       ),
@@ -1208,14 +1309,14 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
       context: context,
       builder: (context) => SimpleDialog(
         backgroundColor: _panel,
-        title: const Text('Agregar a otra playlist'),
+        title: Text('Agregar a otra playlist'),
         children: [
           for (final name in targets)
             SimpleDialogOption(
               onPressed: () => Navigator.pop(context, name),
               child: Row(
                 children: [
-                  const Icon(Icons.queue_music_rounded, color: _cyan, size: 19),
+                  Icon(Icons.queue_music_rounded, color: _cyan, size: 19),
                   const SizedBox(width: 10),
                   Expanded(child: Text(name)),
                   Text(

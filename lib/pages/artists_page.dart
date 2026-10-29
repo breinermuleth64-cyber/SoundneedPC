@@ -27,6 +27,8 @@ class ArtistsPage extends StatelessWidget {
     this.trackPlayCounts = const {},
     this.onPlayArtistStation,
     this.onPlayChartTrack,
+    this.onAddChartToPlaylist,
+    this.onToggleChartFavorite,
     this.onPlayArtistSong,
     super.key,
   });
@@ -49,6 +51,8 @@ class ArtistsPage extends StatelessWidget {
   final Map<String, int> trackPlayCounts;
   final ValueChanged<String>? onPlayArtistStation;
   final PlayChartTrack? onPlayChartTrack;
+  final SaveChartTrack? onAddChartToPlaylist;
+  final SaveChartTrack? onToggleChartFavorite;
   final Future<void> Function(ArtistSongResult, List<ArtistSongResult>)?
   onPlayArtistSong;
 
@@ -56,12 +60,15 @@ class ArtistsPage extends StatelessWidget {
   Widget build(BuildContext context) => MiddleContentPanel(
     section: 'Artistas',
     config: config,
+    showHeader: loading,
     body: loading
         ? config.body
         : MediaCollectionBrowser(
             tracks: tracks,
             showArtists: true,
             compact: compact,
+            accentColor: config.accentColor,
+            secondaryAccent: config.secondaryColor,
             currentTrackPath: currentTrackPath,
             isPlaying: isPlaying,
             favoritePaths: favoritePaths,
@@ -76,6 +83,8 @@ class ArtistsPage extends StatelessWidget {
             onPlayTracks: onPlayTracks,
             onPlayArtistStation: onPlayArtistStation,
             onPlayChartTrack: onPlayChartTrack,
+            onAddChartToPlaylist: onAddChartToPlaylist,
+            onToggleChartFavorite: onToggleChartFavorite,
             onPlayArtistSong: onPlayArtistSong,
           ),
   );
