@@ -8,12 +8,26 @@ class ListeningHistoryProfile {
     required this.searchedArtists,
     required this.recentTrackKeys,
     required this.trackPlayCounts,
+    required this.recentTracks,
   });
 
   final List<String> preferredArtists;
   final List<String> searchedArtists;
   final Set<String> recentTrackKeys;
   final Map<String, int> trackPlayCounts;
+  final List<ListeningHistoryTrack> recentTracks;
+}
+
+class ListeningHistoryTrack {
+  const ListeningHistoryTrack({
+    required this.title,
+    required this.artist,
+    required this.playedAt,
+  });
+
+  final String title;
+  final String artist;
+  final DateTime playedAt;
 }
 
 class ListeningHistoryService {
@@ -40,11 +54,12 @@ class ListeningHistoryService {
   }) async {
     final preferences = await SharedPreferences.getInstance();
     final now = DateTime.now();
-    final searches = _readSearches(
-      preferences.getString(_searchStorageKey),
-    )..removeWhere((entry) => now.difference(entry.searchedAt).inDays > 90);
+    final searches = _readSearches(preferences.getString(_searchStorageKey))
+      ..removeWhere((entry) => now.difference(entry.searchedAt).inDays > 90);
     final candidates = <String>{
-      ...resultArtists.map((artist) => artist.trim()).where((artist) => artist.isNotEmpty),
+      ...resultArtists
+          .map((artist) => artist.trim())
+          .where((artist) => artist.isNotEmpty),
     };
     if (candidates.isEmpty && query.trim().isNotEmpty) {
       candidates.add(query.trim());
@@ -63,10 +78,7 @@ class ListeningHistoryService {
       _searchStorageKey,
       jsonEncode(searches.map((entry) => entry.toJson()).toList()),
     );
-    return _profile(
-      _read(preferences.getString(_storageKey)),
-      searches,
-    );
+    return _profile(_read(preferences.getString(_storageKey)), searches);
   }
 
   Future<ListeningHistoryProfile> record({
@@ -162,6 +174,17 @@ class ListeningHistoryService {
       trackPlayCounts: Map.unmodifiable({
         for (final key in rankedTrackKeys) key: trackScores[key]!,
       }),
+      recentTracks: List.unmodifiable(
+        records
+            .take(30)
+            .map(
+              (entry) => ListeningHistoryTrack(
+                title: entry.title,
+                artist: entry.artist,
+                playedAt: entry.playedAt,
+              ),
+            ),
+      ),
     );
   }
 

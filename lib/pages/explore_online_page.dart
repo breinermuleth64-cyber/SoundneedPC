@@ -8,6 +8,7 @@ class ExploreOnlinePage extends StatelessWidget {
   const ExploreOnlinePage({
     required this.config,
     required this.recommendations,
+    required this.sessions,
     required this.seedArtists,
     required this.loading,
     required this.error,
@@ -18,6 +19,7 @@ class ExploreOnlinePage extends StatelessWidget {
 
   final LibraryPageConfig config;
   final List<ExploreRecommendation> recommendations;
+  final List<ExploreDiscoverySession> sessions;
   final List<String> seedArtists;
   final bool loading;
   final String? error;
@@ -35,12 +37,30 @@ class ExploreOnlinePage extends StatelessWidget {
       builder: (context, constraints) {
         final compact = constraints.maxWidth < 700;
         final featured = recommendations.isEmpty ? null : recommendations.first;
-        final groups = <String, List<ExploreRecommendation>>{};
-        for (final recommendation in recommendations.skip(1)) {
-          groups.putIfAbsent(recommendation.seedArtist, () => []).add(recommendation);
-        }
+        final visibleSessions = sessions
+            .map(
+              (session) => ExploreDiscoverySession(
+                id: session.id,
+                title: session.title,
+                subtitle: session.subtitle,
+                sourceUnavailable: session.sourceUnavailable,
+                items: session.items
+                    .where((item) => item.id != featured?.id)
+                    .toList(growable: false),
+              ),
+            )
+            .where(
+              (session) =>
+                  session.sourceUnavailable || session.items.isNotEmpty,
+            )
+            .toList(growable: false);
         return SingleChildScrollView(
-          padding: EdgeInsets.fromLTRB(compact ? 20 : 34, 30, compact ? 20 : 34, 40),
+          padding: EdgeInsets.fromLTRB(
+            compact ? 20 : 34,
+            30,
+            compact ? 20 : 34,
+            40,
+          ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -50,14 +70,30 @@ class ExploreOnlinePage extends StatelessWidget {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text('TU RADAR MUSICAL', style: TextStyle(color: _accent, fontSize: 11, letterSpacing: 2, fontWeight: FontWeight.w700)),
+                        Text(
+                          'TU RADAR MUSICAL',
+                          style: TextStyle(
+                            color: _accent,
+                            fontSize: 11,
+                            letterSpacing: 2,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
                         SizedBox(height: 8),
-                        Text('Descubre', style: TextStyle(fontSize: 40, height: 1, letterSpacing: -1.4, fontWeight: FontWeight.w800)),
+                        Text(
+                          'Descubre',
+                          style: TextStyle(
+                            fontSize: 40,
+                            height: 1,
+                            letterSpacing: -1.4,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
                       ],
                     ),
                   ),
                   IconButton(
-                    tooltip: 'Actualizar recomendaciones',
+                    tooltip: 'Ver otras sesiones de descubrimiento',
                     onPressed: loading ? null : onRefresh,
                     icon: const Icon(Icons.refresh_rounded),
                   ),
@@ -67,8 +103,13 @@ class ExploreOnlinePage extends StatelessWidget {
               Text(
                 seedArtists.isEmpty
                     ? 'Música online seleccionada para abrir nuevos caminos.'
-                    : 'Artistas relacionados con ${seedArtists.take(3).join(', ')}',
+                    : 'Artistas relacionados con ${seedArtists.take(5).join(', ')}',
                 style: const TextStyle(color: Colors.white60, fontSize: 13),
+              ),
+              const SizedBox(height: 5),
+              const Text(
+                'Explora hasta 10 sesiones por visita. Actualiza para recorrer otras rutas.',
+                style: TextStyle(color: Colors.white38, fontSize: 11),
               ),
               const SizedBox(height: 24),
               if (loading && featured == null)
@@ -105,25 +146,23 @@ class ExploreOnlinePage extends StatelessWidget {
                   onTap: () => onPlay(featured),
                 ),
                 const SizedBox(height: 30),
-                _RecommendationRow(
-                  title: 'Te puede gustar',
-                  subtitle: 'Nuevas canciones afines a lo que escuchas',
-                  items: recommendations,
-                  onPlay: onPlay,
-                ),
-                for (final entry in groups.entries) ...[
+                for (final session in visibleSessions) ...[
                   const SizedBox(height: 30),
                   _RecommendationRow(
-                    title: 'Relacionado con ${entry.key}',
-                    subtitle: 'Artistas conectados por similitud musical',
-                    items: entry.value,
+                    title: session.title,
+                    subtitle: session.subtitle,
+                    items: session.items,
+                    sourceUnavailable: session.sourceUnavailable,
                     onPlay: onPlay,
                   ),
                 ],
               ],
               if (error != null && featured != null) ...[
                 const SizedBox(height: 14),
-                Text(error!, style: const TextStyle(color: Colors.white54, fontSize: 12)),
+                Text(
+                  error!,
+                  style: const TextStyle(color: Colors.white54, fontSize: 12),
+                ),
               ],
             ],
           ),
@@ -134,7 +173,11 @@ class ExploreOnlinePage extends StatelessWidget {
 }
 
 class _FeaturedRecommendation extends StatelessWidget {
-  const _FeaturedRecommendation({required this.item, required this.compact, required this.onTap});
+  const _FeaturedRecommendation({
+    required this.item,
+    required this.compact,
+    required this.onTap,
+  });
   final ExploreRecommendation item;
   final bool compact;
   final VoidCallback onTap;
@@ -157,7 +200,10 @@ class _FeaturedRecommendation extends StatelessWidget {
                 gradient: LinearGradient(
                   begin: Alignment.centerRight,
                   end: Alignment.centerLeft,
-                  colors: [Colors.black.withValues(alpha: .18), Colors.black.withValues(alpha: .92)],
+                  colors: [
+                    Colors.black.withValues(alpha: .18),
+                    Colors.black.withValues(alpha: .92),
+                  ],
                 ),
               ),
             ),
@@ -169,13 +215,54 @@ class _FeaturedRecommendation extends StatelessWidget {
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text('DESCUBRIMIENTO PARA TI', style: TextStyle(color: ExploreOnlinePage._accent, fontSize: 10, letterSpacing: 1.8, fontWeight: FontWeight.w700)),
+                    const Text(
+                      'DESCUBRIMIENTO PARA TI',
+                      style: TextStyle(
+                        color: ExploreOnlinePage._accent,
+                        fontSize: 10,
+                        letterSpacing: 1.8,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
                     const SizedBox(height: 8),
-                    Text(item.title, maxLines: 2, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: compact ? 24 : 32, fontWeight: FontWeight.w800, height: 1.05)),
+                    Text(
+                      item.title,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: compact ? 24 : 32,
+                        fontWeight: FontWeight.w800,
+                        height: 1.05,
+                      ),
+                    ),
                     const SizedBox(height: 5),
-                    Text(item.artist, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Colors.white70, fontSize: 15)),
+                    Text(
+                      item.artist,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: Colors.white70,
+                        fontSize: 15,
+                      ),
+                    ),
                     const SizedBox(height: 14),
-                    Row(children: [const Icon(Icons.play_circle_fill_rounded, color: Color(0xFF83E8FF), size: 28), const SizedBox(width: 9), Text(item.reason, style: const TextStyle(color: Colors.white70, fontSize: 12))]),
+                    Row(
+                      children: [
+                        const Icon(
+                          Icons.play_circle_fill_rounded,
+                          color: Color(0xFF83E8FF),
+                          size: 28,
+                        ),
+                        const SizedBox(width: 9),
+                        Text(
+                          item.reason,
+                          style: const TextStyle(
+                            color: Colors.white70,
+                            fontSize: 12,
+                          ),
+                        ),
+                      ],
+                    ),
                   ],
                 ),
               ),
@@ -188,53 +275,121 @@ class _FeaturedRecommendation extends StatelessWidget {
 }
 
 class _RecommendationRow extends StatelessWidget {
-  const _RecommendationRow({required this.title, required this.subtitle, required this.items, required this.onPlay});
+  const _RecommendationRow({
+    required this.title,
+    required this.subtitle,
+    required this.items,
+    required this.sourceUnavailable,
+    required this.onPlay,
+  });
   final String title;
   final String subtitle;
   final List<ExploreRecommendation> items;
+  final bool sourceUnavailable;
   final ValueChanged<ExploreRecommendation> onPlay;
 
   @override
   Widget build(BuildContext context) => Column(
     crossAxisAlignment: CrossAxisAlignment.start,
     children: [
-      Text(title, style: const TextStyle(fontSize: 21, fontWeight: FontWeight.w700)),
+      Text(
+        title,
+        style: const TextStyle(fontSize: 21, fontWeight: FontWeight.w700),
+      ),
       const SizedBox(height: 3),
-      Text(subtitle, style: const TextStyle(color: Colors.white54, fontSize: 12)),
+      Text(
+        subtitle,
+        style: const TextStyle(color: Colors.white54, fontSize: 12),
+      ),
       const SizedBox(height: 14),
-      SizedBox(
-        height: 188,
-        child: ListView.separated(
-          scrollDirection: Axis.horizontal,
-          itemCount: items.length,
-          separatorBuilder: (_, _) => const SizedBox(width: 12),
-          itemBuilder: (context, index) {
-            final item = items[index];
-            return SizedBox(
-              width: 142,
-              child: InkWell(
-                onTap: () => onPlay(item),
-                borderRadius: BorderRadius.circular(12),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Expanded(child: ClipRRect(borderRadius: BorderRadius.circular(12), child: SizedBox(width: 142, child: _NetworkArtwork(url: item.artworkUrl)))),
-                    const SizedBox(height: 8),
-                    Text(item.title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700)),
-                    Text(item.artist, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Colors.white60, fontSize: 11)),
-                  ],
+      if (sourceUnavailable)
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(18),
+          decoration: BoxDecoration(
+            color: const Color(0xFF171A20),
+            borderRadius: BorderRadius.circular(14),
+          ),
+          child: Row(
+            children: [
+              const Icon(
+                Icons.info_outline_rounded,
+                color: ExploreOnlinePage._accent,
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  'Esta sesión necesita una fuente de datos que aún no está disponible.',
+                  style: const TextStyle(color: Colors.white60, fontSize: 12),
                 ),
               ),
-            );
-          },
+            ],
+          ),
+        )
+      else
+        SizedBox(
+          height: 188,
+          child: ListView.separated(
+            scrollDirection: Axis.horizontal,
+            itemCount: items.length,
+            separatorBuilder: (_, _) => const SizedBox(width: 12),
+            itemBuilder: (context, index) {
+              final item = items[index];
+              return SizedBox(
+                width: 142,
+                child: InkWell(
+                  onTap: () => onPlay(item),
+                  borderRadius: BorderRadius.circular(12),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Expanded(
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(12),
+                          child: SizedBox(
+                            width: 142,
+                            child: _NetworkArtwork(url: item.artworkUrl),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        item.title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      Text(
+                        item.artist,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: Colors.white60,
+                          fontSize: 11,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            },
+          ),
         ),
-      ),
     ],
   );
 }
 
 class _DiscoveryMessage extends StatelessWidget {
-  const _DiscoveryMessage({required this.icon, required this.title, required this.detail, this.loading = false, this.onRetry});
+  const _DiscoveryMessage({
+    required this.icon,
+    required this.title,
+    required this.detail,
+    this.loading = false,
+    this.onRetry,
+  });
   final IconData icon;
   final String title;
   final String detail;
@@ -245,13 +400,48 @@ class _DiscoveryMessage extends StatelessWidget {
   Widget build(BuildContext context) => Container(
     width: double.infinity,
     padding: const EdgeInsets.all(26),
-    decoration: BoxDecoration(color: const Color(0xFF171A20), borderRadius: BorderRadius.circular(18)),
+    decoration: BoxDecoration(
+      color: const Color(0xFF171A20),
+      borderRadius: BorderRadius.circular(18),
+    ),
     child: Row(
       children: [
-        if (loading) const SizedBox(width: 34, height: 34, child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF83E8FF))) else Icon(icon, size: 32, color: const Color(0xFF83E8FF)),
+        if (loading)
+          const SizedBox(
+            width: 34,
+            height: 34,
+            child: CircularProgressIndicator(
+              strokeWidth: 2,
+              color: Color(0xFF83E8FF),
+            ),
+          )
+        else
+          Icon(icon, size: 32, color: const Color(0xFF83E8FF)),
         const SizedBox(width: 16),
-        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(title, style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w700)), const SizedBox(height: 5), Text(detail, style: const TextStyle(color: Colors.white60, fontSize: 13))])),
-        if (onRetry != null) IconButton(onPressed: onRetry, icon: const Icon(Icons.refresh_rounded)),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                title,
+                style: const TextStyle(
+                  fontSize: 17,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              const SizedBox(height: 5),
+              Text(
+                detail,
+                style: const TextStyle(color: Colors.white60, fontSize: 13),
+              ),
+            ],
+          ),
+        ),
+        if (onRetry != null)
+          IconButton(
+            onPressed: onRetry,
+            icon: const Icon(Icons.refresh_rounded),
+          ),
       ],
     ),
   );
@@ -263,8 +453,19 @@ class _NetworkArtwork extends StatelessWidget {
   @override
   Widget build(BuildContext context) => url.isEmpty
       ? _placeholder()
-      : Image.network(url, fit: BoxFit.cover, errorBuilder: (_, _, _) => _placeholder());
+      : Image.network(
+          url,
+          fit: BoxFit.cover,
+          errorBuilder: (_, _, _) => _placeholder(),
+        );
 
-  Widget _placeholder() => Container(color: const Color(0xFF20232B), alignment: Alignment.center, child: const Icon(Icons.music_note_rounded, color: Colors.white54, size: 34));
+  Widget _placeholder() => Container(
+    color: const Color(0xFF20232B),
+    alignment: Alignment.center,
+    child: const Icon(
+      Icons.music_note_rounded,
+      color: Colors.white54,
+      size: 34,
+    ),
+  );
 }
-
