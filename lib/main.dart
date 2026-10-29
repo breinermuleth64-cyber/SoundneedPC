@@ -7,8 +7,7 @@ import 'dart:ui' as ui;
 import 'package:audio_metadata_reader/audio_metadata_reader.dart';
 import 'package:crypto/crypto.dart';
 import 'package:file_selector/file_selector.dart';
-import 'package:flutter/foundation.dart'
-    show compute, consolidateHttpClientResponseBytes;
+import 'package:flutter/foundation.dart' show compute;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show MethodChannel;
 import 'package:just_audio/just_audio.dart';
@@ -27,15 +26,12 @@ import 'pages/explore_online_page.dart';
 import 'pages/home_page.dart';
 import 'pages/music_page.dart';
 import 'pages/playlists_page.dart';
-import 'widgets/library_content.dart';
 import 'widgets/middle_content_panel.dart';
 import 'widgets/mini_player.dart';
 import 'widgets/now_playing_panel.dart';
 import 'widgets/ambient_album_background.dart';
-import 'widgets/collection_hero.dart';
 import 'widgets/online_search_results.dart';
 import 'services/artist_song_discovery_service.dart';
-import 'services/artwork_palette.dart';
 import 'services/explore_discovery_service.dart';
 import 'services/home_discovery_service.dart';
 import 'services/listening_history_service.dart';
@@ -503,6 +499,9 @@ class _LibraryScreenState extends State<LibraryScreen> {
       final feed = await ExploreDiscoveryService.instance.discover(
         history: profile,
         youtube: _youtube,
+        favoriteArtists: _tracks
+            .where((track) => _favorites.contains(track.path))
+            .map((track) => track.artist),
         refresh: refresh,
       );
       if (!mounted || requestId != _exploreRequestId) return;
@@ -3100,6 +3099,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
             : ExploreOnlinePage(
                 config: config,
                 recommendations: _exploreFeed.recommendations,
+                sessions: _exploreFeed.sessions,
                 seedArtists: _exploreFeed.seeds,
                 loading: _exploreRecommendationsLoading,
                 error: _exploreRecommendationError,
