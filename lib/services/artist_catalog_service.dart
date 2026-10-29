@@ -4,14 +4,30 @@ import 'package:http/http.dart' as http;
 
 class ArtistCatalogEntry {
   const ArtistCatalogEntry({
+    this.id = '',
     required this.name,
     required this.pictureUrl,
     this.fanCount,
   });
 
+  final String id;
   final String name;
   final String pictureUrl;
   final int? fanCount;
+}
+
+class ArtistCatalogTrack {
+  const ArtistCatalogTrack({
+    required this.id,
+    required this.title,
+    required this.artist,
+    required this.artworkUrl,
+  });
+
+  final String id;
+  final String title;
+  final String artist;
+  final String artworkUrl;
 }
 
 class ArtistCatalogService {
@@ -24,6 +40,10 @@ class ArtistCatalogService {
   final Map<String, Future<ArtistCatalogEntry?>> _pending = {};
   final Map<String, _CachedArtistList> _searches = {};
   final Map<String, Future<List<ArtistCatalogEntry>>> _searchPending = {};
+  final Map<String, _CachedArtistList> _related = {};
+  final Map<String, Future<List<ArtistCatalogEntry>>> _relatedPending = {};
+  final Map<String, _CachedCatalogTracks> _artistTracks = {};
+  final Map<String, Future<List<ArtistCatalogTrack>>> _artistTrackPending = {};
   final http.Client _client = http.Client();
 
   Future<ArtistCatalogEntry?> lookup(String name) {
@@ -51,6 +71,127 @@ class ArtistCatalogService {
       return Future.value(cached.entries.take(limit).toList(growable: false));
     }
     return _searchPending.putIfAbsent(key, () => _search(value, key, limit));
+  }
+
+  Future<List<ArtistCatalogEntry>> relatedArtists(
+    String artist, {
+    bool forceRefresh = false,
+  }) {
+    final query = artist.trim();
+    if (query.isEmpty) return Future.value(const []);
+    final key = _normalize(query);
+    final cached = _related[key];
+    if (!forceRefresh &&
+        cached != null &&
+        DateTime.now().difference(cached.savedAt) < _cacheAge) {
+      return Future.value(cached.entries);
+    }
+    return _relatedPending.putIfAbsent(key, () => _fetchRelated(query, key));
+  }
+
+  Future<List<ArtistCatalogTrack>> tracksForArtist(
+    ArtistCatalogEntry artist, {
+    int limit = 20,
+    bool forceRefresh = false,
+  }) {
+    if (artist.id.isEmpty) return Future.value(const []);
+    final key = artist.id;
+    final cached = _artistTracks[key];
+    if (!forceRefresh &&
+        cached != null &&
+        DateTime.now().difference(cached.savedAt) < _cacheAge) {
+      return Future.value(cached.tracks.take(limit).toList(growable: false));
+    }
+    return _artistTrackPending.putIfAbsent(
+      key,
+      () => _fetchArtistTracks(artist, key, limit),
+    );
+  }
+
+  Future<List<ArtistCatalogEntry>> _fetchRelated(
+    String query,
+    String key,
+  ) async {
+    try {
+      final matches = await searchArtists(query, limit: 8);
+      ArtistCatalogEntry? artist;
+      for (final match in matches) {
+        if (_normalize(match.name) == key) {
+          artist = match;
+          break;
+        }
+      }
+      artist ??= matches.isEmpty ? null : matches.first;
+      if (artist == null || artist.id.isEmpty) return const [];
+      final response = await _client
+          .get(
+            Uri.https('api.deezer.com', '/artist/${artist.id}/related'),
+            headers: const {'Accept': 'application/json'},
+          )
+          .timeout(const Duration(seconds: 8));
+      if (response.statusCode != 200) return const [];
+      final decoded = jsonDecode(response.body);
+      if (decoded is! Map || decoded['data'] is! List) return const [];
+      final entries = (decoded['data'] as List)
+          .map(_parse)
+          .whereType<ArtistCatalogEntry>()
+          .where((entry) => entry.id.isNotEmpty)
+          .toList(growable: false);
+      _related[key] = _CachedArtistList(entries, DateTime.now());
+      return List.unmodifiable(entries);
+    } catch (_) {
+      return const [];
+    } finally {
+      _relatedPending.remove(key);
+    }
+  }
+
+  Future<List<ArtistCatalogTrack>> _fetchArtistTracks(
+    ArtistCatalogEntry artist,
+    String key,
+    int limit,
+  ) async {
+    try {
+      final response = await _client
+          .get(
+            Uri.https('api.deezer.com', '/artist/$key/top', {
+              'limit': '$limit',
+            }),
+            headers: const {'Accept': 'application/json'},
+          )
+          .timeout(const Duration(seconds: 8));
+      if (response.statusCode != 200) return const [];
+      final decoded = jsonDecode(response.body);
+      if (decoded is! Map || decoded['data'] is! List) return const [];
+      final tracks = <ArtistCatalogTrack>[];
+      for (final value in decoded['data'] as List) {
+        if (value is! Map) continue;
+        final title = value['title']?.toString().trim() ?? '';
+        final id = value['id']?.toString() ?? '';
+        final album = value['album'];
+        final cover = album is Map
+            ? (album['cover_xl'] ?? album['cover_big'] ?? album['cover_medium'])
+                      ?.toString()
+                      .trim() ??
+                  ''
+            : '';
+        if (title.isEmpty || id.isEmpty) continue;
+        tracks.add(
+          ArtistCatalogTrack(
+            id: id,
+            title: title,
+            artist: artist.name,
+            artworkUrl: cover,
+          ),
+        );
+      }
+      _artistTracks[key] = _CachedCatalogTracks(tracks, DateTime.now());
+      return List.unmodifiable(tracks);
+    } catch (_) {
+      return const [];
+    } finally {
+      _artistTrackPending.remove(key);
+    }
   }
 
   Future<List<ArtistCatalogEntry>> _search(
@@ -124,6 +265,7 @@ class ArtistCatalogService {
     }
     final rawFans = value['nb_fan'];
     return ArtistCatalogEntry(
+      id: value['id']?.toString() ?? '',
       name: name,
       pictureUrl: picture,
       fanCount: rawFans is num
@@ -152,5 +294,12 @@ class _CachedArtistList {
   const _CachedArtistList(this.entries, this.savedAt);
 
   final List<ArtistCatalogEntry> entries;
+  final DateTime savedAt;
+}
+
+class _CachedCatalogTracks {
+  const _CachedCatalogTracks(this.tracks, this.savedAt);
+
+  final List<ArtistCatalogTrack> tracks;
   final DateTime savedAt;
 }

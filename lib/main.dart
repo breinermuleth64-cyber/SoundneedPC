@@ -22,6 +22,7 @@ import 'pages/albums_page.dart';
 import 'pages/artists_page.dart';
 import 'pages/favorites_page.dart';
 import 'pages/explore_page.dart';
+import 'pages/explore_online_page.dart';
 import 'pages/home_page.dart';
 import 'pages/music_page.dart';
 import 'pages/playlists_page.dart';
@@ -32,6 +33,7 @@ import 'widgets/now_playing_panel.dart';
 import 'widgets/ambient_album_background.dart';
 import 'widgets/online_search_results.dart';
 import 'services/artist_song_discovery_service.dart';
+import 'services/explore_discovery_service.dart';
 import 'services/home_discovery_service.dart';
 import 'services/listening_history_service.dart';
 import 'services/playlist_library_service.dart';
@@ -264,8 +266,15 @@ class _LibraryScreenState extends State<LibraryScreen> {
   bool _scanning = false;
   bool? _sidebarCompactOverride;
   bool _exploreSidebarHovered = false;
+  bool _exploreShowingTrack = false;
+  ExploreDiscoveryFeed _exploreFeed = const ExploreDiscoveryFeed(
+    recommendations: [],
+    seeds: [],
+  );
+  bool _exploreRecommendationsLoading = false;
+  String? _exploreRecommendationError;
+  int _exploreRequestId = 0;
   bool _nowPlayingCollapsed = false;
-  bool _nowPlayingExpanded = false;
   bool _queueOpen = false;
   bool _onlineMode = false;
   bool _loopEnabled = false;
@@ -320,6 +329,8 @@ class _LibraryScreenState extends State<LibraryScreen> {
   List<double> _exploreSpectrum = List<double>.filled(32, 0);
   int _onlineRequestId = 0;
   int _onlinePlaybackRequestId = 0;
+  int _listeningSessionId = 0;
+  int _recordedListeningSessionId = -1;
 
   @override
   void initState() {
@@ -333,6 +344,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
     unawaited(_loadHomeCategory(_discoverMusic));
     _indexSubscription = _player.currentIndexStream.listen((index) {
       if (!mounted || _usingMediaKitForLocalAudio) return;
+      if (index != null && index != _currentIndex) _beginListeningSession();
       setState(() {
         _currentIndex = index;
         _duration = _player.duration;
@@ -344,7 +356,10 @@ class _LibraryScreenState extends State<LibraryScreen> {
       }
     });
     _positionSubscription = _player.positionStream.listen((position) {
-      if (!_usingMediaKitForLocalAudio) _position.value = position;
+      if (!_usingMediaKitForLocalAudio) {
+        _position.value = position;
+        _maybeRecordListeningAtHalfway(position, _duration ?? _player.duration);
+      }
     });
     _errorSubscription = _player.errorStream.listen((error) {
       if (_usingMediaKitForLocalAudio) return;
@@ -376,9 +391,13 @@ class _LibraryScreenState extends State<LibraryScreen> {
   }
 
   void _navigate(String label) {
-    final enteringExplore = label == 'Explorar' && _section != 'Explorar';
+    final reloadExplore = label == 'Explorar' &&
+        (_section != 'Explorar' || _exploreShowingTrack);
     setState(() {
-      if (label == 'Explorar') _exploreSidebarHovered = false;
+      if (label == 'Explorar') {
+        _exploreSidebarHovered = false;
+        _exploreShowingTrack = false;
+      }
       if (_playlists.containsKey(label)) {
         _section = 'Playlists';
         _playlistView = label;
@@ -387,19 +406,31 @@ class _LibraryScreenState extends State<LibraryScreen> {
         _playlistView = null;
       }
     });
-    if (enteringExplore) {
-      _startExploreSpectrumPolling();
-      unawaited(_playRandomOnlineTrack());
-    } else if (label != 'Explorar') {
-      _exploreMeterTimer?.cancel();
-      _exploreMeterTimer = null;
-      _exploreSpectrum = List<double>.filled(32, 0);
-      unawaited(
-        _windowChannel
-            .invokeMethod<void>('stopOutputSpectrum')
-            .catchError((_) {}),
-      );
-    }
+    _exploreMeterTimer?.cancel();
+    _exploreMeterTimer = null;
+    _exploreSpectrum = List<double>.filled(32, 0);
+    unawaited(
+      _windowChannel
+          .invokeMethod<void>('stopOutputSpectrum')
+          .catchError((_) {}),
+    );
+    if (reloadExplore) unawaited(_loadExploreRecommendations());
+  }
+
+  void _returnToExploreDiscoveries() {
+    setState(() => _exploreShowingTrack = false);
+    unawaited(_loadExploreRecommendations());
+  }
+
+  void _openCurrentTrackInExplore() {
+    setState(() {
+      _section = 'Explorar';
+      _playlistView = null;
+      _exploreSidebarHovered = false;
+      _exploreShowingTrack = true;
+    });
+    _startExploreSpectrumPolling();
+    unawaited(_loadExploreRecommendations());
   }
 
   void _startExploreSpectrumPolling() {
@@ -448,24 +479,172 @@ class _LibraryScreenState extends State<LibraryScreen> {
     });
   }
 
-  Future<void> _playRandomOnlineTrack() async {
-    List<_OnlineTrack> availableTracks() => _discoverMusic.tracks
+  Future<void> _loadExploreRecommendations({bool refresh = false}) async {
+    final requestId = ++_exploreRequestId;
+    if (mounted) {
+      setState(() {
+        _exploreRecommendationsLoading = true;
+        _exploreRecommendationError = null;
+        _exploreFeed = const ExploreDiscoveryFeed(
+          recommendations: [],
+          seeds: [],
+        );
+      });
+    }
+    try {
+      final profile = await ListeningHistoryService.instance.load();
+      final feed = await ExploreDiscoveryService.instance.discover(
+        history: profile,
+        youtube: _youtube,
+        refresh: refresh,
+      );
+      if (!mounted || requestId != _exploreRequestId) return;
+      setState(() {
+        _preferredArtists = profile.preferredArtists;
+        _recentlyHeardTrackKeys = profile.recentTrackKeys;
+        _trackPlayCounts = profile.trackPlayCounts;
+        _exploreFeed = feed;
+        _exploreRecommendationsLoading = false;
+      });
+    } catch (_) {
+      if (!mounted || requestId != _exploreRequestId) return;
+      setState(() {
+        _exploreRecommendationError =
+            'No se pudieron cargar artistas relacionados. Revisa tu conexión.';
+        _exploreRecommendationsLoading = false;
+      });
+    }
+  }
+
+  Future<void> _playExploreRecommendation(
+    ExploreRecommendation recommendation,
+  ) async {
+    setState(() => _exploreShowingTrack = true);
+    _startExploreSpectrumPolling();
+    try {
+      // A one-song queue must never loop back to the same recommendation while
+      // the rest of the related queue is still being resolved.
+      if (_loopEnabled) await _player.setLoopMode(LoopMode.off);
+      final selected = await _resolveExploreRecommendation(recommendation);
+      if (selected == null) {
+        if (mounted) _toast('No encontramos una versión online para reproducir.');
+        return;
+      }
+      final selectedTitle = _normalizeChartText(recommendation.title);
+      final nextRecommendations = _exploreFeed.recommendations
+          .where(
+            (item) =>
+                item.id != recommendation.id &&
+                _normalizeChartText(item.title) != selectedTitle,
+          )
+          .take(5)
+          .toList(growable: false);
+      await _playOnlineTrack(selected, queue: [selected], queueIndex: 0);
+      final requestId = _onlinePlaybackRequestId;
+      unawaited(
+        _extendExploreRecommendationQueue(
+          selected,
+          nextRecommendations,
+          requestId,
+        ),
+      );
+    } catch (_) {
+      if (mounted) _toast('No se pudo resolver esta canción online.');
+    }
+  }
+
+  Future<_OnlineTrack?> _resolveExploreRecommendation(
+    ExploreRecommendation recommendation,
+  ) async {
+    final videoId = recommendation.videoId;
+    if (videoId != null) {
+      return _OnlineTrack(
+        videoId: videoId,
+        title: recommendation.title,
+        artist: recommendation.artist,
+        thumbnail: recommendation.artworkUrl,
+        durationSeconds: 0,
+      );
+    }
+    final videos = await _youtube.search
+        .search('${recommendation.title} ${recommendation.artist} audio')
+        .timeout(const Duration(seconds: 15));
+    final candidates = videos
+        .take(12)
+        .map(
+          (video) => _OnlineTrack(
+            videoId: video.id.value,
+            title: video.title,
+            artist: video.author,
+            thumbnail: recommendation.artworkUrl.isEmpty
+                ? video.thumbnails.highResUrl
+                : recommendation.artworkUrl,
+            durationSeconds: video.duration?.inSeconds ?? 0,
+          ),
+        )
         .where(
-          (track) => RegExp(r'^[A-Za-z0-9_-]{11}$').hasMatch(track.videoId),
+          (track) =>
+              RegExp(r'^[A-Za-z0-9_-]{11}$').hasMatch(track.videoId) &&
+              track.title.isNotEmpty,
         )
         .toList(growable: false);
+    if (candidates.isEmpty) return null;
 
-    var tracks = availableTracks();
-    if (tracks.isEmpty) {
-      await _loadHomeCategory(_discoverMusic, refresh: true);
-      tracks = availableTracks();
+    final titleKey = _normalizeChartText(recommendation.title);
+    final artistKey = _normalizeChartText(recommendation.artist);
+    candidates.sort((a, b) {
+      int matchScore(_OnlineTrack track) {
+        final title = _normalizeChartText(track.title);
+        final artist = _normalizeChartText(track.artist);
+        return (title.contains(titleKey) ? 3 : 0) +
+            (artist.contains(artistKey) || title.contains(artistKey) ? 2 : 0) +
+            (track.durationSeconds >= 90 ? 1 : 0);
+      }
+
+      return matchScore(b).compareTo(matchScore(a));
+    });
+    return candidates.first;
+  }
+
+  Future<void> _extendExploreRecommendationQueue(
+    _OnlineTrack selected,
+    List<ExploreRecommendation> recommendations,
+    int requestId,
+  ) async {
+    if (recommendations.isEmpty) return;
+    final resolved = await Future.wait(
+      recommendations.map(_resolveExploreRecommendation),
+    );
+    final queue = <_OnlineTrack>[selected];
+    final seenIds = <String>{selected.videoId};
+    final seenTitles = <String>{_normalizeChartText(selected.title)};
+    for (final track in resolved) {
+      if (track == null || !seenIds.add(track.videoId)) continue;
+      final title = _normalizeChartText(track.title);
+      if (title.isEmpty || !seenTitles.add(title)) continue;
+      queue.add(track);
     }
-    if (tracks.isEmpty) {
-      if (mounted) _toast('No se encontró música online. Intenta de nuevo.');
+    if (!mounted ||
+        requestId != _onlinePlaybackRequestId ||
+        _playingOnlineTrack?.videoId != selected.videoId) {
       return;
     }
-    tracks.shuffle();
-    await _playOnlineTrack(tracks.first, queue: tracks, queueIndex: 0);
+    setState(() {
+      _onlinePlaybackQueue = queue;
+      _onlineQueueIndex = 0;
+    });
+    if (_loopEnabled) {
+      if (queue.length > 1) {
+        await _player.setLoopMode(LoopMode.all);
+      } else {
+        await _player.setLoopMode(LoopMode.off);
+        if (mounted) setState(() => _loopEnabled = false);
+      }
+    }
+    if (_player.processingState == ProcessingState.completed &&
+        queue.length > 1) {
+      unawaited(_skipOnlineTrack(1));
+    }
   }
 
   Future<void> _restore() async {
@@ -744,6 +923,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
     _onlinePlaybackQueue = const [];
     _onlineQueueIndex = -1;
     _error = null;
+    _beginListeningSession();
     try {
       await _startLocalAudioPlayback(
         availableTracks,
@@ -751,10 +931,6 @@ class _LibraryScreenState extends State<LibraryScreen> {
         autoplay: autoplay,
         keepVideoMode: keepVideoMode,
       );
-      if (autoplay) {
-        final track = availableTracks[queueStartAt];
-        unawaited(_recordListening(track.title, track.artist));
-      }
     } catch (error) {
       final failedTrack = availableTracks[queueStartAt];
       final stillExists = await File(failedTrack.path).exists();
@@ -821,7 +997,13 @@ class _LibraryScreenState extends State<LibraryScreen> {
     if (_localAudioPositionSubscription != null) return;
     _localAudioPositionSubscription = _localAudioFallback.stream.position
         .listen((position) {
-          if (_usingMediaKitForLocalAudio) _position.value = position;
+          if (_usingMediaKitForLocalAudio) {
+            _position.value = position;
+            _maybeRecordListeningAtHalfway(
+              position,
+              _duration ?? _localAudioFallback.state.duration,
+            );
+          }
         });
     _localAudioDurationSubscription = _localAudioFallback.stream.duration
         .listen((duration) {
@@ -832,13 +1014,8 @@ class _LibraryScreenState extends State<LibraryScreen> {
     _localAudioPlaylistSubscription = _localAudioFallback.stream.playlist
         .listen((playlist) {
           if (_usingMediaKitForLocalAudio && mounted) {
+            if (playlist.index != _currentIndex) _beginListeningSession();
             setState(() => _currentIndex = playlist.index);
-            if (_localAudioFallback.state.playing) {
-              final track = _currentLocalTrack;
-              if (track != null) {
-                unawaited(_recordListening(track.title, track.artist));
-              }
-            }
           }
         });
   }
@@ -864,6 +1041,32 @@ class _LibraryScreenState extends State<LibraryScreen> {
       _recentlyHeardTrackKeys = profile.recentTrackKeys;
       _trackPlayCounts = profile.trackPlayCounts;
     });
+    if (_section == 'Explorar' && _playingOnlineTrack != null) {
+      unawaited(_loadExploreRecommendations());
+    }
+  }
+
+  void _beginListeningSession() {
+    _listeningSessionId++;
+  }
+
+  void _maybeRecordListeningAtHalfway(
+    Duration position,
+    Duration? duration,
+  ) {
+    if (duration == null ||
+        duration.inMilliseconds <= 0 ||
+        position.inMilliseconds < duration.inMilliseconds ~/ 2 ||
+        _recordedListeningSessionId == _listeningSessionId) {
+      return;
+    }
+    final online = _playingOnlineTrack;
+    final local = online == null ? _currentLocalTrack : null;
+    final title = online?.title ?? local?.title;
+    final artist = online?.artist ?? local?.artist;
+    if (title == null || artist == null) return;
+    _recordedListeningSessionId = _listeningSessionId;
+    unawaited(_recordListening(title, artist));
   }
 
   Future<void> _playCollection(
@@ -1739,6 +1942,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
     }
     _videoLoading = false;
     final requestId = ++_onlinePlaybackRequestId;
+    _beginListeningSession();
     _onlineDebounce?.cancel();
     _queue.clear();
     _currentIndex = null;
@@ -2272,10 +2476,6 @@ class _LibraryScreenState extends State<LibraryScreen> {
     try {
       unawaited(_prefetchNextOnlineTrack(requestId));
       await _player.play();
-      final track = _playingOnlineTrack;
-      if (track != null && requestId == _onlinePlaybackRequestId) {
-        unawaited(_recordListening(track.title, track.artist));
-      }
     } catch (error) {
       if (requestId != _onlinePlaybackRequestId) return;
       await _writePlaybackLog('Online playback failed: $error');
@@ -2510,9 +2710,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
                                   duration: const Duration(milliseconds: 380),
                                   curve: Curves.easeInOutCubic,
                                   width: hasNowPlaying && !exploring
-                                      ? (showNowPlaying
-                                            ? (_nowPlayingExpanded ? 430 : 326)
-                                            : 64)
+                                      ? (showNowPlaying ? 326 : 64)
                                       : 0,
                                   child: ClipRect(
                                     child: SizedBox.expand(
@@ -2532,8 +2730,6 @@ class _LibraryScreenState extends State<LibraryScreen> {
                                                   offset: Offset.zero,
                                                   child: _nowPlayingPanel(
                                                     current,
-                                                    expanded:
-                                                        _nowPlayingExpanded,
                                                   ),
                                                 ),
                                               ),
@@ -2754,19 +2950,42 @@ class _LibraryScreenState extends State<LibraryScreen> {
         onPlayStation: (artist) => unawaited(_playArtistStation(artist)),
         onNavigate: _navigate,
       ),
-      'Explorar' => ExplorePage(
-        config: config,
-        track: _currentLocalTrack,
-        onlineArtwork: _playingOnlineTrack?.thumbnail,
-        spectrum: _exploreSpectrum,
-        onPrevious: () => unawaited(_skipMiniPlayerTrack(-1)),
-        onNext: () => unawaited(_skipMiniPlayerTrack(1)),
-        canGoPrevious: _playingOnlineTrack != null && _onlineQueueIndex > 0,
-        canGoNext:
-            _playingOnlineTrack != null &&
-            _onlineQueueIndex >= 0 &&
-            _onlineQueueIndex < _onlinePlaybackQueue.length - 1,
-      ),
+      'Explorar' => _exploreShowingTrack
+          ? ExplorePage(
+              config: config,
+              track: _currentLocalTrack,
+              onlineArtwork: _playingOnlineTrack?.thumbnail,
+              spectrum: _exploreSpectrum,
+              onBackToDiscoveries: _returnToExploreDiscoveries,
+              recommendations: _exploreFeed.recommendations,
+              recommendationsLoading: _exploreRecommendationsLoading,
+              onPlayRecommendation: (recommendation) =>
+                  unawaited(_playExploreRecommendation(recommendation)),
+              onPrevious: () => unawaited(_skipMiniPlayerTrack(-1)),
+              onNext: () => unawaited(_skipMiniPlayerTrack(1)),
+              canGoPrevious:
+                  _playingOnlineTrack != null
+                      ? _onlineQueueIndex > 0
+                      : (_currentIndex ?? 0) > 0,
+              canGoNext:
+                  _playingOnlineTrack != null
+                      ? _onlineQueueIndex >= 0 &&
+                            _onlineQueueIndex < _onlinePlaybackQueue.length - 1
+                      : _currentIndex != null &&
+                            _currentIndex! < _queue.length - 1,
+            )
+          : ExploreOnlinePage(
+              config: config,
+              recommendations: _exploreFeed.recommendations,
+              seedArtists: _exploreFeed.seeds,
+              loading: _exploreRecommendationsLoading,
+              error: _exploreRecommendationError,
+              onRefresh: () => unawaited(
+                _loadExploreRecommendations(refresh: true),
+              ),
+              onPlay: (recommendation) =>
+                  unawaited(_playExploreRecommendation(recommendation)),
+            ),
       'Tu música' => MusicPage(config: config),
       'Favoritos' => FavoritesPage(config: config),
       'Carpetas' => MiddleContentPanel(
@@ -3444,9 +3663,9 @@ class _LibraryScreenState extends State<LibraryScreen> {
     );
   }
 
-  Widget _nowPlayingPanel(Track? track, {required bool expanded}) {
+  Widget _nowPlayingPanel(Track? track) {
     final onlineTrack = _playingOnlineTrack;
-    final artworkSize = expanded ? 350.0 : 270.0;
+    const artworkSize = 270.0;
     final videoReadyForCurrentTrack =
         _videoMode &&
         !_videoPreviewUnavailable &&
@@ -3487,11 +3706,8 @@ class _LibraryScreenState extends State<LibraryScreen> {
       videoLoading: _videoLoading,
       onCollapse: () => setState(() {
         _nowPlayingCollapsed = true;
-        _nowPlayingExpanded = false;
       }),
-      expanded: expanded,
-      onToggleExpand: () =>
-          setState(() => _nowPlayingExpanded = !_nowPlayingExpanded),
+      onOpenExplore: _openCurrentTrackInExplore,
       videoEnabled: onlineTrack?.directAudioUrl == null,
       onVideoTap: onlineTrack?.directAudioUrl != null || _videoLoading
           ? null

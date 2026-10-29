@@ -121,96 +121,118 @@ std::vector<double> AudioSpectrumCapture::GetSpectrum() const {
 void AudioSpectrumCapture::CaptureLoop() {
   const HRESULT com_result = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
   const bool uninitialize_com = SUCCEEDED(com_result);
-  IMMDeviceEnumerator* enumerator = nullptr;
-  IMMDevice* device = nullptr;
-  IAudioClient* audio_client = nullptr;
-  IAudioCaptureClient* capture_client = nullptr;
-  WAVEFORMATEX* format = nullptr;
+  // The default render endpoint can change while the app is running (for
+  // example, when headphones are connected). WASAPI loopback clients are tied
+  // to the endpoint they were created for, so rebuild the client after any
+  // initialization or capture error and keep trying while Explore is open.
+  while (running_.load()) {
+    IMMDeviceEnumerator* enumerator = nullptr;
+    IMMDevice* device = nullptr;
+    IAudioClient* audio_client = nullptr;
+    IAudioCaptureClient* capture_client = nullptr;
+    WAVEFORMATEX* format = nullptr;
 
-  const bool initialized =
-      SUCCEEDED(CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr,
-                                 CLSCTX_ALL, __uuidof(IMMDeviceEnumerator),
-                                 reinterpret_cast<void**>(&enumerator))) &&
-      SUCCEEDED(enumerator->GetDefaultAudioEndpoint(eRender, eConsole,
-                                                    &device)) &&
-      SUCCEEDED(device->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr,
-                                 reinterpret_cast<void**>(&audio_client))) &&
-      SUCCEEDED(audio_client->GetMixFormat(&format)) &&
-      SUCCEEDED(audio_client->Initialize(AUDCLNT_SHAREMODE_SHARED,
-                                         AUDCLNT_STREAMFLAGS_LOOPBACK,
-                                         500000, 0, format, nullptr)) &&
-      SUCCEEDED(audio_client->GetService(__uuidof(IAudioCaptureClient),
-                                         reinterpret_cast<void**>(
-                                             &capture_client))) &&
-      SUCCEEDED(audio_client->Start());
+    const bool initialized =
+        SUCCEEDED(CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr,
+                                   CLSCTX_ALL, __uuidof(IMMDeviceEnumerator),
+                                   reinterpret_cast<void**>(&enumerator))) &&
+        SUCCEEDED(enumerator->GetDefaultAudioEndpoint(eRender, eConsole,
+                                                      &device)) &&
+        SUCCEEDED(device->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr,
+                                   reinterpret_cast<void**>(&audio_client))) &&
+        SUCCEEDED(audio_client->GetMixFormat(&format)) &&
+        SUCCEEDED(audio_client->Initialize(AUDCLNT_SHAREMODE_SHARED,
+                                           AUDCLNT_STREAMFLAGS_LOOPBACK,
+                                           500000, 0, format, nullptr)) &&
+        SUCCEEDED(audio_client->GetService(__uuidof(IAudioCaptureClient),
+                                           reinterpret_cast<void**>(
+                                               &capture_client))) &&
+        SUCCEEDED(audio_client->Start());
 
-  if (initialized && format && format->nSamplesPerSec > 0 &&
-      format->nChannels > 0) {
-    const bool is_float = IsFloatFormat(format);
-    std::array<float, kSampleWindow> ring{};
-    size_t write_index = 0;
-    size_t filled = 0;
-    while (running_.load()) {
-      UINT32 packet_frames = 0;
-      if (FAILED(capture_client->GetNextPacketSize(&packet_frames))) break;
-      bool received_samples = false;
-      while (packet_frames > 0 && running_.load()) {
-        BYTE* buffer = nullptr;
-        UINT32 frames = 0;
-        DWORD flags = 0;
-        if (FAILED(capture_client->GetBuffer(&buffer, &frames, &flags, nullptr,
-                                            nullptr))) {
-          break;
-        }
-        if (flags & AUDCLNT_BUFFERFLAGS_SILENT) {
-          for (UINT32 frame = 0; frame < frames; ++frame) {
-            ring[write_index] = 0.0f;
-            write_index = (write_index + 1) % kSampleWindow;
-            filled = std::min(filled + 1, kSampleWindow);
-          }
-        } else if (buffer) {
-          for (UINT32 frame = 0; frame < frames; ++frame) {
-            float mono = 0.0f;
-            for (WORD channel = 0; channel < format->nChannels; ++channel) {
-              mono += ReadSample(buffer,
-                                 static_cast<size_t>(frame) * format->nChannels +
-                                     channel,
-                                 format->wBitsPerSample, is_float);
-            }
-            ring[write_index] = mono / format->nChannels;
-            write_index = (write_index + 1) % kSampleWindow;
-            filled = std::min(filled + 1, kSampleWindow);
-          }
-        }
-        received_samples = true;
-        capture_client->ReleaseBuffer(frames);
+    bool captured = false;
+    if (initialized && format && format->nSamplesPerSec > 0 &&
+        format->nChannels > 0) {
+      captured = true;
+      const bool is_float = IsFloatFormat(format);
+      std::array<float, kSampleWindow> ring{};
+      size_t write_index = 0;
+      size_t filled = 0;
+      while (running_.load()) {
+        UINT32 packet_frames = 0;
         if (FAILED(capture_client->GetNextPacketSize(&packet_frames))) {
-          packet_frames = 0;
+          captured = false;
           break;
         }
-      }
+        bool received_samples = false;
+        while (packet_frames > 0 && running_.load()) {
+          BYTE* buffer = nullptr;
+          UINT32 frames = 0;
+          DWORD flags = 0;
+          if (FAILED(capture_client->GetBuffer(&buffer, &frames, &flags,
+                                               nullptr, nullptr))) {
+            captured = false;
+            break;
+          }
+          if (flags & AUDCLNT_BUFFERFLAGS_SILENT) {
+            for (UINT32 frame = 0; frame < frames; ++frame) {
+              ring[write_index] = 0.0f;
+              write_index = (write_index + 1) % kSampleWindow;
+              filled = std::min(filled + 1, kSampleWindow);
+            }
+          } else if (buffer) {
+            for (UINT32 frame = 0; frame < frames; ++frame) {
+              float mono = 0.0f;
+              for (WORD channel = 0; channel < format->nChannels; ++channel) {
+                mono += ReadSample(
+                    buffer,
+                    static_cast<size_t>(frame) * format->nChannels + channel,
+                    format->wBitsPerSample, is_float);
+              }
+              ring[write_index] = mono / format->nChannels;
+              write_index = (write_index + 1) % kSampleWindow;
+              filled = std::min(filled + 1, kSampleWindow);
+            }
+          }
+          received_samples = true;
+          capture_client->ReleaseBuffer(frames);
+          if (FAILED(capture_client->GetNextPacketSize(&packet_frames))) {
+            captured = false;
+            packet_frames = 0;
+            break;
+          }
+        }
 
-      if (received_samples && filled == kSampleWindow) {
-        std::array<float, kSampleWindow> ordered{};
-        for (size_t i = 0; i < kSampleWindow; ++i) {
-          ordered[i] = ring[(write_index + i) % kSampleWindow];
+        if (received_samples && filled == kSampleWindow) {
+          std::array<float, kSampleWindow> ordered{};
+          for (size_t i = 0; i < kSampleWindow; ++i) {
+            ordered[i] = ring[(write_index + i) % kSampleWindow];
+          }
+          const auto bands = AnalyzeBands(ordered, format->nSamplesPerSec);
+          std::lock_guard<std::mutex> lock(spectrum_mutex_);
+          for (size_t i = 0; i < kBandCount; ++i) {
+            spectrum_[i] = spectrum_[i] * 0.35f + bands[i] * 0.65f;
+          }
         }
-        const auto bands = AnalyzeBands(ordered, format->nSamplesPerSec);
-        std::lock_guard<std::mutex> lock(spectrum_mutex_);
-        for (size_t i = 0; i < kBandCount; ++i) {
-          spectrum_[i] = spectrum_[i] * 0.35f + bands[i] * 0.65f;
-        }
+        Sleep(12);
       }
-      Sleep(12);
+    }
+
+    if (audio_client) audio_client->Stop();
+    if (format) CoTaskMemFree(format);
+    ReleaseCom(capture_client);
+    ReleaseCom(audio_client);
+    ReleaseCom(device);
+    ReleaseCom(enumerator);
+
+    if (running_.load()) {
+      // Clear stale bars during a device switch and allow Windows time to
+      // publish the new default endpoint before reconnecting.
+      if (!captured) {
+        std::lock_guard<std::mutex> lock(spectrum_mutex_);
+        spectrum_.fill(0.0f);
+      }
+      Sleep(500);
     }
   }
-
-  if (audio_client) audio_client->Stop();
-  if (format) CoTaskMemFree(format);
-  ReleaseCom(capture_client);
-  ReleaseCom(audio_client);
-  ReleaseCom(device);
-  ReleaseCom(enumerator);
   if (uninitialize_com) CoUninitialize();
-  running_.store(false);
 }

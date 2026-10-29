@@ -10,8 +10,7 @@ class NowPlayingPanel extends StatelessWidget {
     required this.onVideoTap,
     required this.audioPlaying,
     required this.onCollapse,
-    required this.onToggleExpand,
-    required this.expanded,
+    required this.onOpenExplore,
     this.audioActive = true,
     this.videoEnabled = true,
     this.videoActive = false,
@@ -25,8 +24,7 @@ class NowPlayingPanel extends StatelessWidget {
   final VoidCallback? onVideoTap;
   final bool audioPlaying;
   final VoidCallback onCollapse;
-  final VoidCallback onToggleExpand;
-  final bool expanded;
+  final VoidCallback onOpenExplore;
   final bool audioActive;
   final bool videoEnabled;
   final bool videoActive;
@@ -64,16 +62,12 @@ class NowPlayingPanel extends StatelessWidget {
                 ),
                 const Spacer(),
                 IconButton(
-                  tooltip: expanded
-                      ? 'Reducir vista previa'
-                      : 'Ampliar vista previa',
+                  tooltip: 'Abrir en Explorar',
                   visualDensity: VisualDensity.compact,
                   splashRadius: 18,
-                  onPressed: onToggleExpand,
+                  onPressed: onOpenExplore,
                   icon: Icon(
-                    expanded
-                        ? Icons.close_fullscreen_rounded
-                        : Icons.open_in_full_rounded,
+                    Icons.open_in_full_rounded,
                     color: _muted,
                     size: 20,
                   ),

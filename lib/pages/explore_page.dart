@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart' show listEquals;
 import 'package:flutter/material.dart';
 
 import '../models/track.dart';
+import '../services/explore_discovery_service.dart';
 import '../widgets/library_content.dart';
 import '../widgets/middle_content_panel.dart';
 
@@ -17,6 +18,10 @@ class ExplorePage extends StatelessWidget {
     required this.spectrum,
     required this.onPrevious,
     required this.onNext,
+    required this.onBackToDiscoveries,
+    required this.recommendations,
+    required this.recommendationsLoading,
+    required this.onPlayRecommendation,
     required this.canGoPrevious,
     required this.canGoNext,
     super.key,
@@ -28,6 +33,10 @@ class ExplorePage extends StatelessWidget {
   final List<double> spectrum;
   final VoidCallback onPrevious;
   final VoidCallback onNext;
+  final VoidCallback onBackToDiscoveries;
+  final List<ExploreRecommendation> recommendations;
+  final bool recommendationsLoading;
+  final ValueChanged<ExploreRecommendation> onPlayRecommendation;
   final bool canGoPrevious;
   final bool canGoNext;
 
@@ -65,13 +74,30 @@ class ExplorePage extends StatelessWidget {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                const Text(
-                  'PARA TI, AL AZAR',
-                  style: TextStyle(
-                    color: _cyan,
-                    fontSize: 11,
-                    letterSpacing: 2.2,
-                    fontWeight: FontWeight.w700,
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 24),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text(
+                        'PARA TI, AL AZAR',
+                        style: TextStyle(
+                          color: _cyan,
+                          fontSize: 11,
+                          letterSpacing: 2.2,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      TextButton.icon(
+                        onPressed: onBackToDiscoveries,
+                        icon: const Icon(Icons.arrow_back_rounded, size: 17),
+                        label: const Text('Descubrimientos'),
+                        style: TextButton.styleFrom(
+                          foregroundColor: Colors.white70,
+                          visualDensity: VisualDensity.compact,
+                        ),
+                      ),
+                    ],
                   ),
                 ),
                 const SizedBox(height: 20),
@@ -119,6 +145,15 @@ class ExplorePage extends StatelessWidget {
                     ],
                   ),
                 ),
+                const SizedBox(height: 32),
+                SizedBox(
+                  width: constraints.maxWidth,
+                  child: _ExploreRecommendations(
+                    recommendations: recommendations,
+                    loading: recommendationsLoading,
+                    onPlay: onPlayRecommendation,
+                  ),
+                ),
               ],
             ),
           ),
@@ -131,6 +166,143 @@ class ExplorePage extends StatelessWidget {
     color: const Color(0xFF111722),
     alignment: Alignment.center,
     child: Icon(Icons.music_note_rounded, color: _cyan, size: size * .3),
+  );
+}
+
+class _ExploreRecommendations extends StatelessWidget {
+  const _ExploreRecommendations({
+    required this.recommendations,
+    required this.loading,
+    required this.onPlay,
+  });
+
+  final List<ExploreRecommendation> recommendations;
+  final bool loading;
+  final ValueChanged<ExploreRecommendation> onPlay;
+
+  @override
+  Widget build(BuildContext context) => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      const Padding(
+        padding: EdgeInsets.symmetric(horizontal: 26),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'SIGUE DESCUBRIENDO',
+              style: TextStyle(
+                color: Color(0xFF83E8FF),
+                fontSize: 10,
+                letterSpacing: 2,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            SizedBox(height: 6),
+            Text(
+              'Relacionado contigo',
+              style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
+            ),
+          ],
+        ),
+      ),
+      const SizedBox(height: 14),
+      if (loading)
+        const Padding(
+          padding: EdgeInsets.symmetric(horizontal: 26, vertical: 16),
+          child: Row(
+            children: [
+              SizedBox(
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: Color(0xFF83E8FF),
+                ),
+              ),
+              SizedBox(width: 10),
+              Text(
+                'Buscando canciones para ti…',
+                style: TextStyle(color: Colors.white60, fontSize: 12),
+              ),
+            ],
+          ),
+        )
+      else if (recommendations.isEmpty)
+        const Padding(
+          padding: EdgeInsets.symmetric(horizontal: 26, vertical: 16),
+          child: Text(
+            'Aún no encontramos canciones relacionadas. Sigue escuchando y vuelve a intentarlo.',
+            style: TextStyle(color: Colors.white60, fontSize: 12),
+          ),
+        )
+      else
+        SizedBox(
+          height: 190,
+          child: ListView.separated(
+            padding: const EdgeInsets.symmetric(horizontal: 26),
+            scrollDirection: Axis.horizontal,
+            itemCount: recommendations.length,
+            separatorBuilder: (_, _) => const SizedBox(width: 12),
+            itemBuilder: (context, index) {
+              final item = recommendations[index];
+              return SizedBox(
+                width: 142,
+                child: InkWell(
+                  onTap: () => onPlay(item),
+                  borderRadius: BorderRadius.circular(12),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Expanded(
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(12),
+                          child: SizedBox(
+                            width: 142,
+                            child: item.artworkUrl.isEmpty
+                                ? _recommendationPlaceholder()
+                                : Image.network(
+                                    item.artworkUrl,
+                                    fit: BoxFit.cover,
+                                    errorBuilder: (_, _, _) =>
+                                        _recommendationPlaceholder(),
+                                  ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        item.title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      Text(
+                        item.artist,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: Colors.white60,
+                          fontSize: 11,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
+    ],
+  );
+
+  Widget _recommendationPlaceholder() => Container(
+    color: const Color(0xFF20232B),
+    alignment: Alignment.center,
+    child: const Icon(Icons.music_note_rounded, color: Colors.white54),
   );
 }
 
