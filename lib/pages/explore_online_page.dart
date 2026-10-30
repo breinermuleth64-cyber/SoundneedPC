@@ -108,7 +108,7 @@ class ExploreOnlinePage extends StatelessWidget {
               ),
               const SizedBox(height: 5),
               const Text(
-                'Explora hasta 10 sesiones por visita. Actualiza para recorrer otras rutas.',
+                'Elige una ruta musical y descubre canciones conectadas con tus gustos.',
                 style: TextStyle(color: Colors.white38, fontSize: 11),
               ),
               const SizedBox(height: 24),
@@ -215,14 +215,39 @@ class _FeaturedRecommendation extends StatelessWidget {
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text(
-                      'DESCUBRIMIENTO PARA TI',
-                      style: TextStyle(
-                        color: ExploreOnlinePage._accent,
-                        fontSize: 10,
-                        letterSpacing: 1.8,
-                        fontWeight: FontWeight.w700,
-                      ),
+                    Row(
+                      children: [
+                        const Text(
+                          'DESCUBRIMIENTO PARA TI',
+                          style: TextStyle(
+                            color: ExploreOnlinePage._accent,
+                            fontSize: 10,
+                            letterSpacing: 1.8,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                        if (item.fromCatalog) ...[
+                          const SizedBox(width: 8),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 6,
+                              vertical: 2,
+                            ),
+                            decoration: BoxDecoration(
+                              color: ExploreOnlinePage._accent.withValues(alpha: 0.15),
+                              borderRadius: BorderRadius.circular(4),
+                            ),
+                            child: const Text(
+                              'Curado',
+                              style: TextStyle(
+                                color: ExploreOnlinePage._accent,
+                                fontSize: 9,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ],
                     ),
                     const SizedBox(height: 8),
                     Text(
@@ -292,9 +317,31 @@ class _RecommendationRow extends StatelessWidget {
   Widget build(BuildContext context) => Column(
     crossAxisAlignment: CrossAxisAlignment.start,
     children: [
-      Text(
-        title,
-        style: const TextStyle(fontSize: 21, fontWeight: FontWeight.w700),
+      Row(
+        children: [
+          Text(
+            title,
+            style: const TextStyle(fontSize: 21, fontWeight: FontWeight.w700),
+          ),
+          if (items.any((item) => item.fromCatalog)) ...[
+            const SizedBox(width: 8),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+              decoration: BoxDecoration(
+                color: ExploreOnlinePage._accent.withValues(alpha: 0.15),
+                borderRadius: BorderRadius.circular(4),
+              ),
+              child: const Text(
+                'Curado',
+                style: TextStyle(
+                  color: ExploreOnlinePage._accent,
+                  fontSize: 10,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+          ],
+        ],
       ),
       const SizedBox(height: 3),
       Text(
@@ -369,6 +416,17 @@ class _RecommendationRow extends StatelessWidget {
                         style: const TextStyle(
                           color: Colors.white60,
                           fontSize: 11,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        item.reason,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: ExploreOnlinePage._accent,
+                          fontSize: 10,
+                          fontWeight: FontWeight.w500,
                         ),
                       ),
                     ],

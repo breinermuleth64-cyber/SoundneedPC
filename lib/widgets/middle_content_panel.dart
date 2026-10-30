@@ -83,17 +83,14 @@ class MiddleContentPanel extends StatelessWidget {
                         ),
                       ),
                       if (section == 'Playlists')
-                        Semantics(
-                          label: 'Crear playlist',
-                          child: TooltipVisibility(
-                            visible: false,
-                            child: IconButton(
-                              tooltip: 'Crear playlist',
-                              onPressed: config.onCreatePlaylist,
-                              icon: const Icon(
-                                Icons.add_circle_outline,
-                                color: _cyan,
-                              ),
+                        TooltipVisibility(
+                          visible: false,
+                          child: IconButton(
+                            tooltip: 'Crear playlist',
+                            onPressed: config.onCreatePlaylist,
+                            icon: const Icon(
+                              Icons.add_circle_outline,
+                              color: _cyan,
                             ),
                           ),
                         ),

@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <string>
 #include <vector>
 
 namespace {
@@ -56,6 +57,22 @@ float ReadSample(const BYTE* data, size_t index, WORD bits, bool is_float) {
     return static_cast<float>(sample) / 2147483648.0f;
   }
   return 0.0f;
+}
+
+bool IsDefaultMultimediaEndpoint(IMMDeviceEnumerator* enumerator,
+                                 const std::wstring& active_endpoint_id) {
+  IMMDevice* default_device = nullptr;
+  if (FAILED(enumerator->GetDefaultAudioEndpoint(eRender, eMultimedia,
+                                                  &default_device))) {
+    return false;
+  }
+  LPWSTR endpoint_id = nullptr;
+  const HRESULT result = default_device->GetId(&endpoint_id);
+  const bool is_same = SUCCEEDED(result) && endpoint_id &&
+                       active_endpoint_id == endpoint_id;
+  if (endpoint_id) CoTaskMemFree(endpoint_id);
+  ReleaseCom(default_device);
+  return is_same;
 }
 
 std::array<float, kBandCount> AnalyzeBands(
@@ -131,13 +148,21 @@ void AudioSpectrumCapture::CaptureLoop() {
     IAudioClient* audio_client = nullptr;
     IAudioCaptureClient* capture_client = nullptr;
     WAVEFORMATEX* format = nullptr;
+    std::wstring active_endpoint_id;
 
-    const bool initialized =
+    bool initialized =
         SUCCEEDED(CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr,
                                    CLSCTX_ALL, __uuidof(IMMDeviceEnumerator),
                                    reinterpret_cast<void**>(&enumerator))) &&
-        SUCCEEDED(enumerator->GetDefaultAudioEndpoint(eRender, eConsole,
-                                                      &device)) &&
+        SUCCEEDED(enumerator->GetDefaultAudioEndpoint(eRender, eMultimedia,
+                                                      &device));
+    if (initialized) {
+      LPWSTR endpoint_id = nullptr;
+      initialized = SUCCEEDED(device->GetId(&endpoint_id)) && endpoint_id;
+      if (initialized) active_endpoint_id = endpoint_id;
+      if (endpoint_id) CoTaskMemFree(endpoint_id);
+    }
+    initialized = initialized &&
         SUCCEEDED(device->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr,
                                    reinterpret_cast<void**>(&audio_client))) &&
         SUCCEEDED(audio_client->GetMixFormat(&format)) &&
@@ -157,7 +182,19 @@ void AudioSpectrumCapture::CaptureLoop() {
       std::array<float, kSampleWindow> ring{};
       size_t write_index = 0;
       size_t filled = 0;
+      ULONGLONG last_endpoint_check = GetTickCount64();
       while (running_.load()) {
+        // WASAPI loopback remains attached to its original endpoint after a
+        // headphone/default-device switch. Detect the new multimedia endpoint
+        // and recreate the client so the visualizer follows the active output.
+        const ULONGLONG now = GetTickCount64();
+        if (now - last_endpoint_check >= 1000) {
+          last_endpoint_check = now;
+          if (!IsDefaultMultimediaEndpoint(enumerator, active_endpoint_id)) {
+            captured = false;
+            break;
+          }
+        }
         UINT32 packet_frames = 0;
         if (FAILED(capture_client->GetNextPacketSize(&packet_frames))) {
           captured = false;

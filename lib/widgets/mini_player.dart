@@ -12,8 +12,8 @@ class MiniPlayer extends StatefulWidget {
     required this.artist,
     required this.cover,
     this.artworkProvider,
-    required this.isFavorite,
-    required this.onToggleFavorite,
+    required this.isAddedToCollection,
+    required this.onAddToCollections,
     required this.playingStream,
     required this.initialPlaying,
     required this.loading,
@@ -47,8 +47,8 @@ class MiniPlayer extends StatefulWidget {
   final String artist;
   final Widget cover;
   final ImageProvider? artworkProvider;
-  final bool isFavorite;
-  final VoidCallback? onToggleFavorite;
+  final bool isAddedToCollection;
+  final VoidCallback? onAddToCollections;
   final Stream<bool> playingStream;
   final bool initialPlaying;
   final bool loading;
@@ -622,14 +622,18 @@ class _MiniPlayerState extends State<MiniPlayer> {
                     ],
                   ),
                 ),
-                if (widget.onToggleFavorite != null)
+                if (widget.onAddToCollections != null)
                   _iconButton(
-                    tooltip: 'Favorito',
-                    icon: widget.isFavorite
-                        ? CupertinoIcons.heart_fill
-                        : CupertinoIcons.heart,
-                    onPressed: widget.onToggleFavorite,
-                    color: widget.isFavorite ? accentColor : mutedColor,
+                    tooltip: widget.isAddedToCollection
+                        ? 'Guardada en una colección'
+                        : 'Añadir a playlist o Me gusta',
+                    icon: widget.isAddedToCollection
+                        ? Icons.check_rounded
+                        : Icons.add_rounded,
+                    onPressed: widget.onAddToCollections,
+                    color: widget.isAddedToCollection
+                        ? accentColor
+                        : mutedColor,
                     iconSize: 17,
                   ),
               ],

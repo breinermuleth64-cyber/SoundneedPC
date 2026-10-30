@@ -2,7 +2,7 @@ import 'dart:io';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
 
-import 'package:flutter/foundation.dart' show listEquals;
+import 'package:flutter/foundation.dart' show listEquals, ValueListenable;
 import 'package:flutter/material.dart';
 
 import '../models/track.dart';
@@ -30,7 +30,7 @@ class ExplorePage extends StatelessWidget {
   final LibraryPageConfig config;
   final Track? track;
   final String? onlineArtwork;
-  final List<double> spectrum;
+  final ValueListenable<List<double>> spectrum;
   final VoidCallback onPrevious;
   final VoidCallback onNext;
   final VoidCallback onBackToDiscoveries;
@@ -50,11 +50,10 @@ class ExplorePage extends StatelessWidget {
     body: LayoutBuilder(
       builder: (context, constraints) {
         final artwork = track?.coverPath;
-        final artworkFile = artwork == null ? null : File(artwork);
-        final hasLocalArtwork = artworkFile?.existsSync() ?? false;
         final remoteArtwork = onlineArtwork;
-        final ImageProvider<Object>? artworkProvider = hasLocalArtwork
-            ? FileImage(artworkFile!)
+        final ImageProvider<Object>? artworkProvider =
+            artwork != null && artwork.isNotEmpty
+            ? FileImage(File(artwork))
             : remoteArtwork != null && remoteArtwork.isNotEmpty
             ? NetworkImage(remoteArtwork)
             : null;
@@ -108,12 +107,18 @@ class ExplorePage extends StatelessWidget {
                     clipBehavior: Clip.none,
                     children: [
                       Center(
-                        child: _ReactiveAlbumCover(
-                          size: coverSize,
-                          spectrumMargin: spectrumMargin,
-                          spectrum: spectrum,
-                          artworkProvider: artworkProvider,
-                          placeholder: _coverPlaceholder(coverSize),
+                        child: RepaintBoundary(
+                          child: ValueListenableBuilder<List<double>>(
+                            valueListenable: spectrum,
+                            builder: (context, spectrumValues, _) =>
+                                _ReactiveAlbumCover(
+                                  size: coverSize,
+                                  spectrumMargin: spectrumMargin,
+                                  spectrum: spectrumValues,
+                                  artworkProvider: artworkProvider,
+                                  placeholder: _coverPlaceholder(coverSize),
+                                ),
+                              ),
                         ),
                       ),
                       Positioned(
@@ -200,14 +205,14 @@ class _ExploreRecommendations extends StatelessWidget {
             ),
             SizedBox(height: 6),
             Text(
-              'Relacionado contigo',
+              'Del artista, colaboraciones y artistas relacionados',
               style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
             ),
           ],
         ),
       ),
       const SizedBox(height: 14),
-      if (loading)
+      if (loading && recommendations.isEmpty)
         const Padding(
           padding: EdgeInsets.symmetric(horizontal: 26, vertical: 16),
           child: Row(

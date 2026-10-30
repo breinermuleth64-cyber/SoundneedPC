@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
 class ArtistCatalogEntry {
@@ -35,6 +36,9 @@ class ArtistCatalogService {
 
   static final instance = ArtistCatalogService._();
   static const _cacheAge = Duration(hours: 6);
+
+  @visibleForTesting
+  String normalizeArtistNameForTesting(String value) => _normalize(value);
 
   final Map<String, _CachedArtist> _artists = {};
   final Map<String, Future<ArtistCatalogEntry?>> _pending = {};
@@ -121,7 +125,9 @@ class ArtistCatalogService {
           break;
         }
       }
-      artist ??= matches.isEmpty ? null : matches.first;
+      // A fuzzy first search result can belong to a different artist. Never
+      // build a relationship graph from it; an empty result is safer than
+      // showing recommendations for the wrong seed.
       if (artist == null || artist.id.isEmpty) return const [];
       final response = await _client
           .get(
@@ -280,7 +286,31 @@ class ArtistCatalogService {
   }
 
   String _normalize(String value) =>
-      value.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]'), '');
+      value
+          .toLowerCase()
+          .replaceAll('á', 'a')
+          .replaceAll('à', 'a')
+          .replaceAll('ä', 'a')
+          .replaceAll('â', 'a')
+          .replaceAll('é', 'e')
+          .replaceAll('è', 'e')
+          .replaceAll('ë', 'e')
+          .replaceAll('ê', 'e')
+          .replaceAll('í', 'i')
+          .replaceAll('ì', 'i')
+          .replaceAll('ï', 'i')
+          .replaceAll('î', 'i')
+          .replaceAll('ó', 'o')
+          .replaceAll('ò', 'o')
+          .replaceAll('ö', 'o')
+          .replaceAll('ô', 'o')
+          .replaceAll('ú', 'u')
+          .replaceAll('ù', 'u')
+          .replaceAll('ü', 'u')
+          .replaceAll('û', 'u')
+          .replaceAll('ñ', 'n')
+          .replaceAll('ç', 'c')
+          .replaceAll(RegExp(r'[^a-z0-9]'), '');
 }
 
 class _CachedArtist {

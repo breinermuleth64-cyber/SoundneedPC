@@ -5,6 +5,8 @@ class LibraryPageConfig {
     required this.compact,
     required this.hasNowPlayingPanel,
     required this.title,
+    required this.accentColor,
+    required this.secondaryColor,
     this.playlistView,
     required this.trackCount,
     required this.onCreatePlaylist,
@@ -23,6 +25,8 @@ class LibraryPageConfig {
   final bool compact;
   final bool hasNowPlayingPanel;
   final String title;
+  final Color accentColor;
+  final Color secondaryColor;
   final String? playlistView;
   final int trackCount;
   final VoidCallback onCreatePlaylist;

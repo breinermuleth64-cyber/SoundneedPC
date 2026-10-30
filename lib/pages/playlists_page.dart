@@ -1339,14 +1339,6 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
     final candidates = widget.tracks
         .where((track) => !already.contains(track.path))
         .toList(growable: false);
-    if (candidates.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('No hay más canciones en tu biblioteca para agregar.'),
-        ),
-      );
-      return;
-    }
     final chosen = await showDialog<List<Track>>(
       context: context,
       builder: (_) => PlaylistTrackPicker(

@@ -1,4 +1,4 @@
-﻿import 'dart:async';
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -8,7 +8,7 @@ import 'package:audio_metadata_reader/audio_metadata_reader.dart';
 import 'package:crypto/crypto.dart';
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/foundation.dart'
-    show compute, consolidateHttpClientResponseBytes;
+    show compute, consolidateHttpClientResponseBytes, listEquals, mapEquals;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show MethodChannel;
 import 'package:just_audio/just_audio.dart';
@@ -30,14 +30,18 @@ import 'pages/playlists_page.dart';
 import 'widgets/middle_content_panel.dart';
 import 'widgets/mini_player.dart';
 import 'widgets/now_playing_panel.dart';
+import 'widgets/library_content.dart';
 import 'widgets/ambient_album_background.dart';
 import 'widgets/collection_hero.dart';
 import 'widgets/online_search_results.dart';
 import 'services/artist_song_discovery_service.dart';
+import 'services/artist_catalog_service.dart';
 import 'services/artwork_palette.dart';
 import 'services/explore_discovery_service.dart';
+import 'services/explore_feedback_service.dart';
 import 'services/home_discovery_service.dart';
 import 'services/listening_history_service.dart';
+import 'services/online_search_service.dart' as online_search;
 import 'services/playlist_library_service.dart';
 import 'widgets/soundneed_sidebar.dart';
 import 'widgets/soundneed_svg_icon.dart';
@@ -250,6 +254,8 @@ class _LibraryScreenState extends State<LibraryScreen> {
   );
   final TextEditingController _search = TextEditingController();
   final List<Track> _tracks = [];
+  final Map<String, Track> _tracksByPath = {};
+  final Map<String, String> _trackSearchText = {};
   final Set<String> _favorites = {};
   final _playlistLibrary = PlaylistLibraryService.instance;
   Map<String, List<String>> get _playlists => _playlistLibrary.playlists;
@@ -261,6 +267,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
   final Map<String, _OnlineTrack> _resolvedHomeChartTracks = {};
   int _onlineQueueIndex = -1;
   bool _onlineAdvancing = false;
+  bool _onlineQueueDiscoveryLoading = false;
   String _section = 'Inicio';
   String? _playlistView;
   int? _currentIndex;
@@ -273,6 +280,13 @@ class _LibraryScreenState extends State<LibraryScreen> {
     recommendations: [],
     seeds: [],
   );
+  final ExploreFeedRefreshCoordinator _exploreRefreshCoordinator =
+      ExploreFeedRefreshCoordinator();
+  DateTime? _exploreFeedUpdatedAt;
+  DateTime? _exploreRetryAfter;
+  bool _exploreHasSuccessfulLoad = false;
+  bool _exploreFeedStale = true;
+  int _exploreInputRevision = 0;
   bool _exploreRecommendationsLoading = false;
   String? _exploreRecommendationError;
   int _exploreRequestId = 0;
@@ -291,11 +305,16 @@ class _LibraryScreenState extends State<LibraryScreen> {
   Timer? _videoAudioSyncTimer;
   bool _videoAudioSyncInProgress = false;
   bool _closing = false;
+  Future<File>? _playbackLogFile;
+  Future<void> _playbackLogWrites = Future<void>.value();
+  Future<Directory>? _onlineAudioCacheDirectory;
   bool _windowMaximized = Platform.isWindows;
+  Future<void> _uiPreferencesWrites = Future<void>.value();
   String? _error;
   String? _onlineError;
   _OnlineTrack? _playingOnlineTrack;
   ArtworkPalette _appPalette = ArtworkPalette.neutral;
+  final Map<String, ArtworkPalette> _artworkPaletteCache = {};
   String? _artworkPaletteKey;
   int _artworkPaletteRequest = 0;
   String _query = '';
@@ -331,11 +350,14 @@ class _LibraryScreenState extends State<LibraryScreen> {
   Timer? _onlineDebounce;
   Timer? _exploreMeterTimer;
   bool _exploreMeterRequestPending = false;
-  List<double> _exploreSpectrum = List<double>.filled(32, 0);
+  final ValueNotifier<List<double>> _exploreSpectrum = ValueNotifier(
+    List<double>.filled(32, 0),
+  );
   int _onlineRequestId = 0;
   int _onlinePlaybackRequestId = 0;
   int _listeningSessionId = 0;
   int _recordedListeningSessionId = -1;
+  String? _lastCompletedTrackKey;
 
   @override
   void initState() {
@@ -384,7 +406,22 @@ class _LibraryScreenState extends State<LibraryScreen> {
     _playerStateSubscription = _player.playerStateStream.listen((state) {
       if (state.processingState == ProcessingState.completed &&
           _playingOnlineTrack != null) {
-        unawaited(_skipOnlineTrack(1));
+        // Record complete feedback when track finishes (only once per track)
+        final trackKey = listeningTrackKey(
+          _playingOnlineTrack!.title,
+          _playingOnlineTrack!.artist,
+        );
+        if (_lastCompletedTrackKey != trackKey) {
+          _lastCompletedTrackKey = trackKey;
+          unawaited(
+            ExploreFeedbackService.instance.recordInteraction(
+              title: _playingOnlineTrack!.title,
+              artist: _playingOnlineTrack!.artist,
+              type: FeedbackType.complete,
+            ),
+          );
+        }
+        unawaited(_skipOnlineTrack(1, recordSkip: false));
       }
     });
   }
@@ -397,8 +434,6 @@ class _LibraryScreenState extends State<LibraryScreen> {
   }
 
   void _navigate(String label) {
-    final reloadExplore =
-        label == 'Explorar' && (_section != 'Explorar' || _exploreShowingTrack);
     setState(() {
       if (label == 'Explorar') {
         _exploreSidebarHovered = false;
@@ -414,13 +449,35 @@ class _LibraryScreenState extends State<LibraryScreen> {
     });
     _exploreMeterTimer?.cancel();
     _exploreMeterTimer = null;
-    _exploreSpectrum = List<double>.filled(32, 0);
+    _exploreSpectrum.value = List<double>.filled(32, 0);
     unawaited(
       _windowChannel
           .invokeMethod<void>('stopOutputSpectrum')
           .catchError((_) {}),
     );
-    if (reloadExplore) unawaited(_loadExploreRecommendations());
+    if (label == 'Explorar') unawaited(_loadExploreRecommendations());
+  }
+
+  void _persistUiPreferences() {
+    final sidebarCompact = _sidebarCompactOverride;
+    final nowPlayingCollapsed = _nowPlayingCollapsed;
+    final queueOpen = _queueOpen;
+    final videoMode = _videoMode;
+    _uiPreferencesWrites = _uiPreferencesWrites.then((_) async {
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        if (sidebarCompact == null) {
+          await prefs.remove('ui.sidebarCompact.v1');
+        } else {
+          await prefs.setBool('ui.sidebarCompact.v1', sidebarCompact);
+        }
+        await prefs.setBool('ui.nowPlayingCollapsed.v1', nowPlayingCollapsed);
+        await prefs.setBool('ui.queueOpen.v1', queueOpen);
+        await prefs.setBool('ui.videoMode.v1', videoMode);
+      } catch (error) {
+        debugPrint('No se pudo guardar la configuración visual: $error');
+      }
+    });
   }
 
   void _returnToExploreDiscoveries() {
@@ -442,7 +499,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
   void _startExploreSpectrumPolling() {
     _exploreMeterTimer?.cancel();
     if (!Platform.isWindows) return;
-    _exploreSpectrum = List<double>.filled(32, 0);
+    _exploreSpectrum.value = List<double>.filled(32, 0);
     unawaited(
       _windowChannel
           .invokeMethod<void>('startOutputSpectrum')
@@ -468,14 +525,12 @@ class _LibraryScreenState extends State<LibraryScreen> {
               .toList(growable: false);
           var changed = false;
           for (var i = 0; i < nextSpectrum.length; i++) {
-            if ((nextSpectrum[i] - _exploreSpectrum[i]).abs() >= .01) {
+            if ((nextSpectrum[i] - _exploreSpectrum.value[i]).abs() >= .01) {
               changed = true;
               break;
             }
           }
-          if (changed) {
-            setState(() => _exploreSpectrum = nextSpectrum);
-          }
+          if (changed) _exploreSpectrum.value = nextSpectrum;
         }
       } catch (_) {
         // The visualizer stays still if output capture is unavailable.
@@ -486,15 +541,29 @@ class _LibraryScreenState extends State<LibraryScreen> {
   }
 
   Future<void> _loadExploreRecommendations({bool refresh = false}) async {
+    if (!refresh &&
+        _exploreRetryAfter != null &&
+        DateTime.now().isBefore(_exploreRetryAfter!)) {
+      return;
+    }
+    await _exploreRefreshCoordinator.load(
+      force: refresh,
+      hasSuccessfulLoad: _exploreHasSuccessfulLoad,
+      updatedAt: _exploreFeedUpdatedAt,
+      isStale: _exploreFeedStale,
+      reload: () => _performExploreRecommendationsLoad(refresh: refresh),
+    );
+  }
+
+  Future<void> _performExploreRecommendationsLoad({
+    bool refresh = false,
+  }) async {
     final requestId = ++_exploreRequestId;
+    final inputRevision = _exploreInputRevision;
     if (mounted) {
       setState(() {
         _exploreRecommendationsLoading = true;
         _exploreRecommendationError = null;
-        _exploreFeed = const ExploreDiscoveryFeed(
-          recommendations: [],
-          seeds: [],
-        );
       });
     }
     try {
@@ -513,21 +582,44 @@ class _LibraryScreenState extends State<LibraryScreen> {
         _recentlyHeardTrackKeys = profile.recentTrackKeys;
         _trackPlayCounts = profile.trackPlayCounts;
         _exploreFeed = feed;
-        _exploreRecommendationsLoading = false;
+        _exploreHasSuccessfulLoad = true;
+        _exploreFeedUpdatedAt = DateTime.now();
+        _exploreRetryAfter = null;
+        _exploreFeedStale = inputRevision != _exploreInputRevision;
       });
     } catch (_) {
       if (!mounted || requestId != _exploreRequestId) return;
       setState(() {
+        _exploreFeedStale = true;
+        _exploreRetryAfter = DateTime.now().add(const Duration(minutes: 1));
         _exploreRecommendationError =
             'No se pudieron cargar artistas relacionados. Revisa tu conexión.';
-        _exploreRecommendationsLoading = false;
       });
+    } finally {
+      if (mounted && requestId == _exploreRequestId) {
+        setState(() => _exploreRecommendationsLoading = false);
+      }
     }
+  }
+
+  void _markExploreFeedStale() {
+    _exploreFeedStale = true;
+    _exploreRetryAfter = null;
+    _exploreInputRevision++;
   }
 
   Future<void> _playExploreRecommendation(
     ExploreRecommendation recommendation,
   ) async {
+    // Record click feedback
+    unawaited(
+      ExploreFeedbackService.instance.recordInteraction(
+        title: recommendation.title,
+        artist: recommendation.artist,
+        type: FeedbackType.click,
+      ),
+    );
+
     setState(() => _exploreShowingTrack = true);
     _startExploreSpectrumPolling();
     try {
@@ -536,30 +628,18 @@ class _LibraryScreenState extends State<LibraryScreen> {
       if (_loopEnabled) await _player.setLoopMode(LoopMode.off);
       final selected = await _resolveExploreRecommendation(recommendation);
       if (selected == null) {
-        if (mounted)
-          _toast('No encontramos una versión online para reproducir.');
+        if (mounted) {
+          _returnToExploreDiscoveries();
+          _toast('No encontramos audio disponible para esta canción.');
+        }
         return;
       }
-      final selectedTitle = _normalizeChartText(recommendation.title);
-      final nextRecommendations = _exploreFeed.recommendations
-          .where(
-            (item) =>
-                item.id != recommendation.id &&
-                _normalizeChartText(item.title) != selectedTitle,
-          )
-          .take(5)
-          .toList(growable: false);
       await _playOnlineTrack(selected, queue: [selected], queueIndex: 0);
-      final requestId = _onlinePlaybackRequestId;
-      unawaited(
-        _extendExploreRecommendationQueue(
-          selected,
-          nextRecommendations,
-          requestId,
-        ),
-      );
     } catch (_) {
-      if (mounted) _toast('No se pudo resolver esta canción online.');
+      if (mounted) {
+        _returnToExploreDiscoveries();
+        _toast('No se pudo encontrar audio para esta canción.');
+      }
     }
   }
 
@@ -576,107 +656,314 @@ class _LibraryScreenState extends State<LibraryScreen> {
         durationSeconds: 0,
       );
     }
-    final videos = await _youtube.search
-        .search('${recommendation.title} ${recommendation.artist} audio')
-        .timeout(const Duration(seconds: 15));
-    final candidates = videos
-        .take(12)
-        .map(
-          (video) => _OnlineTrack(
-            videoId: video.id.value,
-            title: video.title,
-            artist: video.author,
-            thumbnail: recommendation.artworkUrl.isEmpty
-                ? video.thumbnails.highResUrl
-                : recommendation.artworkUrl,
-            durationSeconds: video.duration?.inSeconds ?? 0,
-          ),
-        )
-        .where(
-          (track) =>
-              RegExp(r'^[A-Za-z0-9_-]{11}$').hasMatch(track.videoId) &&
-              track.title.isNotEmpty,
-        )
-        .toList(growable: false);
-    if (candidates.isEmpty) return null;
-
-    final titleKey = _normalizeChartText(recommendation.title);
-    final artistKey = _normalizeChartText(recommendation.artist);
-    candidates.sort((a, b) {
-      int matchScore(_OnlineTrack track) {
-        final title = _normalizeChartText(track.title);
-        final artist = _normalizeChartText(track.artist);
-        return (title.contains(titleKey) ? 3 : 0) +
-            (artist.contains(artistKey) || title.contains(artistKey) ? 2 : 0) +
-            (track.durationSeconds >= 90 ? 1 : 0);
+    final title = recommendation.title.trim();
+    final artist = recommendation.artist.trim();
+    if (title.isEmpty) return null;
+    final queries = <String>[
+      if (artist.isNotEmpty) '"$title" "$artist" audio official song',
+      if (artist.isNotEmpty) '"$title" "$artist"',
+      '$title $artist audio',
+      title,
+    ].where((query) => query.trim().isNotEmpty).toSet();
+    final candidates = <online_search.OnlineSearchResult>[];
+    final seenVideoIds = <String>{};
+    online_search.OnlineSearchResult? match;
+    for (final query in queries) {
+      final results = await online_search.OnlineSearchService.instance.search(
+        query,
+      );
+      for (final result in results) {
+        if (seenVideoIds.add(result.videoId)) candidates.add(result);
       }
-
-      return matchScore(b).compareTo(matchScore(a));
-    });
-    return candidates.first;
+      match = online_search.OnlineSearchService.bestTrackMatch(
+        candidates: candidates,
+        title: title,
+        artist: artist,
+      );
+      if (match != null) break;
+    }
+    if (match == null) return null;
+    return _OnlineTrack(
+      videoId: match.videoId,
+      title: recommendation.title,
+      artist: recommendation.artist,
+      thumbnail: recommendation.artworkUrl.isEmpty
+          ? match.thumbnail
+          : recommendation.artworkUrl,
+      durationSeconds: match.durationSeconds,
+    );
   }
 
-  Future<void> _extendExploreRecommendationQueue(
-    _OnlineTrack selected,
-    List<ExploreRecommendation> recommendations,
+  List<ExploreRecommendation> get _visualizerRecommendations {
+    final current = _playingOnlineTrack;
+    if (current == null || _onlinePlaybackQueue.isEmpty) {
+      return _exploreFeed.recommendations;
+    }
+    final start = (_onlineQueueIndex + 1)
+        .clamp(0, _onlinePlaybackQueue.length)
+        .toInt();
+    return _onlinePlaybackQueue
+        .skip(start)
+        .take(12)
+        .map(
+          (track) => ExploreRecommendation(
+            id: track.videoId,
+            title: track.title,
+            artist: track.artist,
+            artworkUrl: track.thumbnail,
+            seedArtist: current.artist,
+            videoId: track.videoId,
+            score: 1,
+            reason: 'Relacionado con ${current.artist}',
+          ),
+        )
+        .toList(growable: false);
+  }
+
+  Future<void> _appendOnlineQueueTracks(
+    _OnlineTrack anchor,
+    Iterable<_OnlineTrack> additions,
     int requestId,
   ) async {
-    if (recommendations.isEmpty) return;
-    final resolved = await Future.wait(
-      recommendations.map(_resolveExploreRecommendation),
+    if (!mounted || requestId != _onlinePlaybackRequestId) return;
+    final queue = List<_OnlineTrack>.of(_onlinePlaybackQueue);
+    final anchorIndex = queue.indexWhere(
+      (item) => item.videoId == anchor.videoId,
     );
-    final queue = <_OnlineTrack>[selected];
-    final seenIds = <String>{selected.videoId};
-    final seenTitles = <String>{_normalizeChartText(selected.title)};
-    for (final track in resolved) {
-      if (track == null || !seenIds.add(track.videoId)) continue;
-      final title = _normalizeChartText(track.title);
-      if (title.isEmpty || !seenTitles.add(title)) continue;
-      queue.add(track);
+    if (anchorIndex < 0) return;
+    final seenIds = queue.map((item) => item.videoId).toSet();
+    final seenTracks = queue
+        .map(
+          (item) =>
+              '${_normalizeChartText(item.title)}|${_normalizeChartText(item.artist)}',
+        )
+        .toSet();
+    for (final item in additions) {
+      final title = _normalizeChartText(item.title);
+      final key = '$title|${_normalizeChartText(item.artist)}';
+      if (title.isEmpty ||
+          !RegExp(r'^[A-Za-z0-9_-]{11}$').hasMatch(item.videoId) ||
+          !seenIds.add(item.videoId) ||
+          !seenTracks.add(key)) {
+        continue;
+      }
+      queue.add(item);
     }
-    if (!mounted ||
-        requestId != _onlinePlaybackRequestId ||
-        _playingOnlineTrack?.videoId != selected.videoId) {
-      return;
-    }
+    if (queue.length == _onlinePlaybackQueue.length) return;
     setState(() {
       _onlinePlaybackQueue = queue;
-      _onlineQueueIndex = 0;
+      _onlineQueueIndex = anchorIndex;
     });
-    if (_loopEnabled) {
-      if (queue.length > 1) {
-        await _player.setLoopMode(LoopMode.all);
-      } else {
-        await _player.setLoopMode(LoopMode.off);
-        if (mounted) setState(() => _loopEnabled = false);
+    if (_loopEnabled) await _player.setLoopMode(LoopMode.all);
+    if (_player.processingState == ProcessingState.completed &&
+        anchorIndex + 1 < queue.length) {
+      unawaited(_skipOnlineTrack(1, recordSkip: false));
+    }
+  }
+
+  Future<void> _extendOnlineQueueFromArtist(
+    _OnlineTrack selected,
+    int requestId,
+  ) async {
+    if (selected.directAudioUrl != null ||
+        selected.videoId.startsWith('podcast:') ||
+        !RegExp(r'^[A-Za-z0-9_-]{11}$').hasMatch(selected.videoId)) {
+      return;
+    }
+    if (mounted) setState(() => _onlineQueueDiscoveryLoading = true);
+    try {
+      await _discoverOnlineQueueFromArtist(selected, requestId);
+    } finally {
+      if (mounted && requestId == _onlinePlaybackRequestId) {
+        setState(() => _onlineQueueDiscoveryLoading = false);
       }
     }
-    if (_player.processingState == ProcessingState.completed &&
-        queue.length > 1) {
-      unawaited(_skipOnlineTrack(1));
+  }
+
+  Future<void> _discoverOnlineQueueFromArtist(
+    _OnlineTrack selected,
+    int requestId,
+  ) async {
+    final remainingCount = _onlinePlaybackQueue.length - _onlineQueueIndex;
+    if (remainingCount >= 10) return;
+    final artist = selected.artist.trim();
+    if (artist.isEmpty) return;
+
+    final sameArtistFuture = ArtistSongDiscoveryService.instance.search(artist);
+    final collaborationsFuture = online_search.OnlineSearchService.instance
+        .search('$artist collaborations featuring songs official audio');
+    final relatedArtistsFuture = ArtistCatalogService.instance
+        .relatedArtists(artist)
+        .timeout(const Duration(seconds: 12), onTimeout: () => const []);
+    final sameArtistSongs = await sameArtistFuture;
+    if (requestId != _onlinePlaybackRequestId) return;
+    final sameArtistAdditions = <_OnlineTrack>[];
+    final noise = RegExp(
+      r'\b(podcast|interview|entrevista|reaction|reaccion|review|episode|episodio|full album|concierto completo|full concert|noticias|news|shorts)\b',
+      caseSensitive: false,
+    );
+    bool isUsable({
+      required String videoId,
+      required String title,
+      required int durationSeconds,
+    }) =>
+        RegExp(r'^[A-Za-z0-9_-]{11}$').hasMatch(videoId) &&
+        title.trim().isNotEmpty &&
+        !noise.hasMatch(title) &&
+        (durationSeconds == 0 ||
+            (durationSeconds >= 45 && durationSeconds <= 1200));
+
+    for (final song in sameArtistSongs) {
+      if (!isUsable(
+        videoId: song.videoId,
+        title: song.title,
+        durationSeconds: song.durationSeconds,
+      )) {
+        continue;
+      }
+      sameArtistAdditions.add(
+        _OnlineTrack(
+          videoId: song.videoId,
+          title: song.title,
+          artist:
+              _normalizeChartText(song.artist).contains(
+                    _normalizeChartText(artist),
+                  )
+              ? song.artist
+              : artist,
+          thumbnail: song.artworkUrl,
+          durationSeconds: song.durationSeconds,
+        ),
+      );
+      if (sameArtistAdditions.length >= 8) break;
+    }
+
+    final collaborationAdditions = <_OnlineTrack>[];
+    final collaborations = await collaborationsFuture;
+    final normalizedArtist = _normalizeChartText(artist);
+    for (final song in collaborations) {
+      if (!isUsable(
+        videoId: song.videoId,
+        title: song.title,
+        durationSeconds: song.durationSeconds,
+      )) {
+        continue;
+      }
+      final collaborationText =
+          '${_normalizeChartText(song.title)} ${_normalizeChartText(song.artist)}';
+      if (!collaborationText.contains(normalizedArtist) &&
+          !RegExp(r'\b(feat|ft|featuring|with|x)\b').hasMatch(
+            collaborationText,
+          )) {
+        continue;
+      }
+      collaborationAdditions.add(
+        _OnlineTrack(
+          videoId: song.videoId,
+          title: song.title,
+          artist: song.artist,
+          thumbnail: song.thumbnail,
+          durationSeconds: song.durationSeconds,
+        ),
+      );
+      if (collaborationAdditions.length >= 8) break;
+    }
+    if (requestId != _onlinePlaybackRequestId) return;
+    final relatedArtists = await relatedArtistsFuture;
+    if (requestId != _onlinePlaybackRequestId) return;
+    final related = relatedArtists
+        .where(
+          (candidate) =>
+              candidate.name.trim().isNotEmpty &&
+              _normalizeChartText(candidate.name) !=
+                  _normalizeChartText(artist),
+        )
+        .take(3)
+        .toList(growable: false);
+    final relatedSongGroups = await Future.wait(
+      related.map((candidate) => ArtistSongDiscoveryService.instance.search(
+            candidate.name,
+          )),
+    );
+    if (requestId != _onlinePlaybackRequestId) return;
+    final relatedAdditions = <_OnlineTrack>[];
+    for (var groupIndex = 0; groupIndex < relatedSongGroups.length; groupIndex++) {
+      final relatedArtist = related[groupIndex].name;
+      var addedForArtist = 0;
+      for (final song in relatedSongGroups[groupIndex]) {
+        if (!isUsable(
+          videoId: song.videoId,
+          title: song.title,
+          durationSeconds: song.durationSeconds,
+        )) {
+          continue;
+        }
+        relatedAdditions.add(
+          _OnlineTrack(
+            videoId: song.videoId,
+            title: song.title,
+            artist:
+                _normalizeChartText(song.artist).contains(
+                      _normalizeChartText(relatedArtist),
+                    )
+                ? song.artist
+                : relatedArtist,
+            thumbnail: song.artworkUrl,
+            durationSeconds: song.durationSeconds,
+          ),
+        );
+        if (++addedForArtist >= 2) break;
+      }
+    }
+
+    if (requestId == _onlinePlaybackRequestId) {
+      final tracksAfterCurrent =
+          _onlinePlaybackQueue.length - _onlineQueueIndex - 1;
+      final slotsToFill = 12 - tracksAfterCurrent;
+      if (slotsToFill <= 0) return;
+      await _appendOnlineQueueTracks(
+        selected,
+        [
+          ...sameArtistAdditions,
+          ...collaborationAdditions,
+          ...relatedAdditions,
+        ].take(slotsToFill),
+        requestId,
+      );
     }
   }
 
   Future<void> _restore() async {
     try {
       final prefs = await SharedPreferences.getInstance();
+      _sidebarCompactOverride = prefs.getBool('ui.sidebarCompact.v1');
+      _nowPlayingCollapsed =
+          prefs.getBool('ui.nowPlayingCollapsed.v1') ?? false;
+      _queueOpen = prefs.getBool('ui.queueOpen.v1') ?? false;
+      final restoreVideoMode = prefs.getBool('ui.videoMode.v1') ?? false;
       final rawTracks = prefs.getString('library.v1');
       if (rawTracks != null) {
         final decoded = jsonDecode(rawTracks) as List<dynamic>;
         _tracks.addAll(
           decoded.map((item) => Track.fromJson(item as Map<String, dynamic>)),
         );
+        _rebuildTrackPathIndex();
       }
       _favorites.addAll(prefs.getStringList('favorites.v1') ?? []);
       _folders.addAll(prefs.getStringList('folders.v1') ?? []);
       _playlistLibrary.restore(
         prefs.getString(PlaylistLibraryService.storageKey),
       );
+      _invalidateVisibleTracks();
       final lastPath = prefs.getString('lastTrack.v1');
       if (lastPath != null) {
         final index = _tracks.indexWhere((track) => track.path == lastPath);
-        if (index >= 0 && File(lastPath).existsSync())
+        if (index >= 0 && await File(lastPath).exists()) {
           await _loadQueue(_tracks, startAt: index, autoplay: false);
+          if (restoreVideoMode && mounted) {
+            unawaited(_playVideoPreview(_tracks[index], null));
+          }
+        }
       }
       await _pruneMissingTracks();
     } catch (error) {
@@ -695,15 +982,23 @@ class _LibraryScreenState extends State<LibraryScreen> {
   }
 
   Future<void> _pruneMissingTracks() async {
-    final gone = _tracks
-        .where((track) => !File(track.path).existsSync())
-        .map((track) => track.path)
-        .toSet();
+    final paths = _tracks.map((track) => track.path).toList(growable: false);
+    final available = await _checkFileAvailability(paths);
+    final gone = <String>{
+      for (var index = 0; index < paths.length; index++)
+        if (!available[index]) paths[index],
+    };
     if (gone.isEmpty) return;
     _tracks.removeWhere((track) => gone.contains(track.path));
+    _rebuildTrackPathIndex();
     _favorites.removeAll(gone);
     await _playlistLibrary.removeMissingTracks(gone);
-    _folders.removeWhere((path) => !Directory(path).existsSync());
+    final folderStatus = await Future.wait(
+      _folders.map((path) => Directory(path).exists()),
+    );
+    for (var index = _folders.length - 1; index >= 0; index--) {
+      if (!folderStatus[index]) _folders.removeAt(index);
+    }
     await _saveLibrary();
     final prefs = await SharedPreferences.getInstance();
     await prefs.setStringList('favorites.v1', _favorites.toList());
@@ -800,6 +1095,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
         }
         _tracks.add(track);
       }
+      _rebuildTrackPathIndex();
       await _saveLibrary();
       if (mounted) setState(() {});
       if (_currentIndex == null && _tracks.isNotEmpty)
@@ -819,16 +1115,15 @@ class _LibraryScreenState extends State<LibraryScreen> {
   String? _cachedSection;
   String? _cachedPlaylistView;
   String? _cachedQuery;
-  Set<String>? _cachedFavorites;
-  Map<String, List<String>>? _cachedPlaylists;
+  int _libraryRevision = 0;
+  int _cachedLibraryRevision = -1;
 
   List<Track> get _visibleTracks {
     // Check if cache is valid
     if (_cachedSection == _section &&
         _cachedPlaylistView == _playlistView &&
         _cachedQuery == _query &&
-        _cachedFavorites == _favorites &&
-        _cachedPlaylists == _playlists) {
+        _cachedLibraryRevision == _libraryRevision) {
       return _cachedVisibleTracks;
     }
 
@@ -837,24 +1132,20 @@ class _LibraryScreenState extends State<LibraryScreen> {
     if (_section == 'Favoritos')
       view = view.where((track) => _favorites.contains(track.path));
     if (_section == 'Playlists' && _playlistView != null) {
-      final paths = _playlists[_playlistView] ?? const <String>[];
+      final paths = (_playlists[_playlistView] ?? const <String>[]).toSet();
       view = view.where((track) => paths.contains(track.path));
     }
     final query = _query.trim().toLowerCase();
     if (query.isNotEmpty)
       view = view.where(
-        (track) =>
-            track.title.toLowerCase().contains(query) ||
-            track.artist.toLowerCase().contains(query) ||
-            track.album.toLowerCase().contains(query),
+        (track) => (_trackSearchText[track.path] ?? '').contains(query),
       );
 
     _cachedVisibleTracks = view.toList();
     _cachedSection = _section;
     _cachedPlaylistView = _playlistView;
     _cachedQuery = _query;
-    _cachedFavorites = Set.from(_favorites);
-    _cachedPlaylists = Map.from(_playlists);
+    _cachedLibraryRevision = _libraryRevision;
 
     return _cachedVisibleTracks;
   }
@@ -871,6 +1162,13 @@ class _LibraryScreenState extends State<LibraryScreen> {
     if (key == _artworkPaletteKey) return;
     _artworkPaletteKey = key;
     final request = ++_artworkPaletteRequest;
+    final cachedPalette = _artworkPaletteCache[key];
+    if (cachedPalette != null) {
+      if (mounted && _appPalette != cachedPalette) {
+        setState(() => _appPalette = cachedPalette);
+      }
+      return;
+    }
     if (key == null ||
         (online == null && (coverPath == null || coverPath.isEmpty))) {
       if (mounted && _appPalette != ArtworkPalette.neutral) {
@@ -900,6 +1198,10 @@ class _LibraryScreenState extends State<LibraryScreen> {
       }
       final palette = await ArtworkPaletteExtractor.fromBytes(bytes);
       if (mounted && request == _artworkPaletteRequest) {
+        _artworkPaletteCache[key] = palette;
+        if (_artworkPaletteCache.length > 64) {
+          _artworkPaletteCache.remove(_artworkPaletteCache.keys.first);
+        }
         setState(() => _appPalette = palette);
       }
     } catch (_) {
@@ -909,14 +1211,48 @@ class _LibraryScreenState extends State<LibraryScreen> {
     }
   }
 
+  void _rebuildTrackPathIndex() {
+    _tracksByPath
+      ..clear()
+      ..addEntries(_tracks.map((track) => MapEntry(track.path, track)));
+    _trackSearchText
+      ..clear()
+      ..addEntries(
+        _tracks.map(
+          (track) => MapEntry(
+            track.path,
+            '${track.title} ${track.artist} ${track.album}'.toLowerCase(),
+          ),
+        ),
+      );
+    _invalidateVisibleTracks();
+  }
+
+  void _invalidateVisibleTracks() {
+    _libraryRevision++;
+  }
+
+  Future<List<bool>> _checkFileAvailability(List<String> paths) async {
+    const batchSize = 64;
+    final results = <bool>[];
+    for (var start = 0; start < paths.length; start += batchSize) {
+      final end = (start + batchSize).clamp(0, paths.length).toInt();
+      results.addAll(
+        await Future.wait(
+          paths
+              .skip(start)
+              .take(end - start)
+              .map((path) => File(path).exists()),
+        ),
+      );
+    }
+    return results;
+  }
+
   Track? get _currentLocalTrack {
     final index = _currentIndex;
     if (index == null || index < 0 || index >= _queue.length) return null;
-    final path = _queue[index];
-    for (final track in _tracks) {
-      if (track.path == path) return track;
-    }
-    return null;
+    return _tracksByPath[_queue[index]];
   }
 
   Future<void> _loadQueue(
@@ -929,11 +1265,14 @@ class _LibraryScreenState extends State<LibraryScreen> {
     final requestedPath = tracks[requestedIndex].path;
     final availableTracks = <Track>[];
     final missingPaths = <String>{};
-    for (final track in tracks) {
-      if (await File(track.path).exists()) {
-        availableTracks.add(track);
+    final fileAvailability = await _checkFileAvailability(
+      tracks.map((track) => track.path).toList(growable: false),
+    );
+    for (var index = 0; index < tracks.length; index++) {
+      if (fileAvailability[index]) {
+        availableTracks.add(tracks[index]);
       } else {
-        missingPaths.add(track.path);
+        missingPaths.add(tracks[index].path);
       }
     }
     if (missingPaths.isNotEmpty) {
@@ -980,6 +1319,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
     _onlinePlaybackRequestId++;
     _playingOnlineTrack = null;
     _onlinePlaybackLoading = false;
+    _onlineQueueDiscoveryLoading = false;
     _onlinePlaybackQueue = const [];
     _onlineQueueIndex = -1;
     _error = null;
@@ -1098,14 +1438,15 @@ class _LibraryScreenState extends State<LibraryScreen> {
       artist: artist,
     );
     if (!mounted) return;
+    final historyChanged =
+        !listEquals(_preferredArtists, profile.preferredArtists) ||
+        !mapEquals(_trackPlayCounts, profile.trackPlayCounts);
+    if (historyChanged) _markExploreFeedStale();
     setState(() {
       _preferredArtists = profile.preferredArtists;
       _recentlyHeardTrackKeys = profile.recentTrackKeys;
       _trackPlayCounts = profile.trackPlayCounts;
     });
-    if (_section == 'Explorar' && _playingOnlineTrack != null) {
-      unawaited(_loadExploreRecommendations());
-    }
   }
 
   void _beginListeningSession() {
@@ -1258,10 +1599,23 @@ class _LibraryScreenState extends State<LibraryScreen> {
   }
 
   Future<void> _toggleFavorite(Track track) async {
+    final isAdding = !_favorites.contains(track.path);
     if (!_favorites.add(track.path)) _favorites.remove(track.path);
+    _invalidateVisibleTracks();
     final prefs = await SharedPreferences.getInstance();
     await prefs.setStringList('favorites.v1', _favorites.toList());
+    _markExploreFeedStale();
     if (mounted) setState(() {});
+    // Record like feedback only when adding (removing favorite doesn't mean skip)
+    if (isAdding) {
+      unawaited(
+        ExploreFeedbackService.instance.recordInteraction(
+          title: track.title,
+          artist: track.artist,
+          type: FeedbackType.like,
+        ),
+      );
+    }
   }
 
   Future<void> _createPlaylist() async {
@@ -1296,6 +1650,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
       _toast('Ya existe una playlist con ese nombre.');
       return;
     }
+    _invalidateVisibleTracks();
     setState(() {
       if (sectionBeforeDialog == 'Playlists') {
         _section = 'Playlists';
@@ -1338,6 +1693,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
       _toast('Ya existe una playlist con ese nombre.');
       return;
     }
+    _invalidateVisibleTracks();
     if (_playlistView == currentName) _playlistView = name;
     if (mounted) setState(() {});
   }
@@ -1368,6 +1724,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
     );
     if (confirmed != true || !mounted) return;
     await _playlistLibrary.delete(name);
+    _invalidateVisibleTracks();
     if (_playlistView == name) {
       _playlistView = null;
       _section = 'Playlists';
@@ -1386,6 +1743,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
     String trackPath,
   ) async {
     await _playlistLibrary.removeTrack(playlist, trackPath);
+    _invalidateVisibleTracks();
     if (mounted) {
       setState(() {});
       _toast('Canción quitada de $playlist.');
@@ -1398,6 +1756,8 @@ class _LibraryScreenState extends State<LibraryScreen> {
       playlist,
       tracks.map((track) => track.path),
     );
+    if (added > 0) _invalidateVisibleTracks();
+    if (added > 0) _markExploreFeedStale();
     if (mounted) {
       setState(() {});
       _toast(
@@ -1430,10 +1790,153 @@ class _LibraryScreenState extends State<LibraryScreen> {
     );
     if (name == null) return;
     final added = await _playlistLibrary.addTracks(name, [track.path]);
+    if (added > 0) _invalidateVisibleTracks();
+    if (added > 0) _markExploreFeedStale();
     if (mounted) {
       setState(() {});
       _toast(added == 0 ? 'La canción ya está en $name.' : 'Añadida a $name.');
     }
+    // Record addToPlaylist feedback
+    if (added > 0) {
+      unawaited(
+        ExploreFeedbackService.instance.recordInteraction(
+          title: track.title,
+          artist: track.artist,
+          type: FeedbackType.addToPlaylist,
+        ),
+      );
+    }
+  }
+
+  Future<void> _showMiniPlayerCollections(Track track) async {
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) {
+          final isFavorite = _favorites.contains(track.path);
+          final playlistNames = _playlists.keys.toList(growable: false);
+          return AlertDialog(
+            backgroundColor: _panel,
+            title: const Text('Guardar canción'),
+            content: SizedBox(
+              width: 360,
+              height: 440,
+              child: ListView(
+                children: [
+                  ListTile(
+                    leading: Icon(
+                      Icons.favorite_rounded,
+                      color: isFavorite ? _cyan : _muted,
+                    ),
+                    title: const Text('Me gusta'),
+                    trailing: Icon(
+                      isFavorite ? Icons.check_rounded : Icons.add_rounded,
+                      color: isFavorite ? _cyan : _muted,
+                    ),
+                    onTap: () async {
+                      await _toggleFavorite(track);
+                      if (mounted) setDialogState(() {});
+                    },
+                  ),
+                  if (playlistNames.isEmpty)
+                    const Padding(
+                      padding: EdgeInsets.fromLTRB(16, 8, 16, 12),
+                      child: Text(
+                        'Todavía no tienes playlists.',
+                        style: TextStyle(color: _muted),
+                      ),
+                    ),
+                  for (final name in playlistNames)
+                    ListTile(
+                      leading: const Icon(Icons.queue_music_rounded),
+                      title: Text(name),
+                      trailing: Icon(
+                        (_playlists[name] ?? const <String>[]).contains(
+                          track.path,
+                        )
+                            ? Icons.check_rounded
+                            : Icons.add_rounded,
+                        color:
+                            (_playlists[name] ?? const <String>[]).contains(
+                              track.path,
+                            )
+                            ? _cyan
+                            : _muted,
+                      ),
+                      onTap: () async {
+                        final isAdded = (_playlists[name] ?? const <String>[])
+                            .contains(track.path);
+                        if (isAdded) {
+                          await _playlistLibrary.removeTrack(name, track.path);
+                          _invalidateVisibleTracks();
+                        } else {
+                          final added = await _playlistLibrary.addTracks(
+                            name,
+                            [track.path],
+                          );
+                          if (added > 0) {
+                            _invalidateVisibleTracks();
+                            _markExploreFeedStale();
+                            unawaited(
+                              ExploreFeedbackService.instance
+                                  .recordInteraction(
+                                    title: track.title,
+                                    artist: track.artist,
+                                    type: FeedbackType.addToPlaylist,
+                                  ),
+                            );
+                          }
+                        }
+                        if (mounted) {
+                          setState(() {});
+                          setDialogState(() {});
+                        }
+                      },
+                    ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton.icon(
+                onPressed: () async {
+                  final previousNames = _playlists.keys.toSet();
+                  Navigator.of(dialogContext).pop();
+                  await _createPlaylist();
+                  if (!mounted) return;
+                  final createdName = _playlists.keys
+                      .where((name) => !previousNames.contains(name))
+                      .firstOrNull;
+                  if (createdName == null) return;
+                  final added = await _playlistLibrary.addTracks(
+                    createdName,
+                    [track.path],
+                  );
+                  if (added > 0) _invalidateVisibleTracks();
+                  if (mounted) setState(() {});
+                  if (added > 0) {
+                    _markExploreFeedStale();
+                    unawaited(
+                      ExploreFeedbackService.instance.recordInteraction(
+                        title: track.title,
+                        artist: track.artist,
+                        type: FeedbackType.addToPlaylist,
+                      ),
+                    );
+                    if (mounted) _toast('Añadida a $createdName.');
+                  }
+                },
+                icon: const Icon(Icons.playlist_add_rounded),
+                label: const Text('Crear playlist'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.of(dialogContext).pop(),
+                child: const Text('Listo'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
   }
 
   Track _libraryTrackForOnline(_OnlineTrack track) {
@@ -1477,8 +1980,10 @@ class _LibraryScreenState extends State<LibraryScreen> {
 
     if (matchingKeys.isNotEmpty) {
       _favorites.removeAll(matchingKeys);
+      _invalidateVisibleTracks();
       final prefs = await SharedPreferences.getInstance();
       await prefs.setStringList('favorites.v1', _favorites.toList());
+      _markExploreFeedStale();
       if (mounted) {
         setState(() {});
         _toast('Quitada de Me gusta.');
@@ -1492,8 +1997,10 @@ class _LibraryScreenState extends State<LibraryScreen> {
       return;
     }
     _favorites.add(_libraryTrackForOnline(resolved).path);
+    _invalidateVisibleTracks();
     final prefs = await SharedPreferences.getInstance();
     await prefs.setStringList('favorites.v1', _favorites.toList());
+    _markExploreFeedStale();
     if (mounted) {
       setState(() {});
       _toast('Añadida a Me gusta.');
@@ -1532,6 +2039,8 @@ class _LibraryScreenState extends State<LibraryScreen> {
       track.videoId,
     );
     final added = await _playlistLibrary.addTracks(name, [key]);
+    if (added > 0) _invalidateVisibleTracks();
+    if (added > 0) _markExploreFeedStale();
     if (!mounted) return;
     setState(() {});
     _toast(added == 0 ? 'La canción ya está en $name.' : 'Añadida a $name.');
@@ -1548,22 +2057,28 @@ class _LibraryScreenState extends State<LibraryScreen> {
     );
   }
 
-  Future<void> _writePlaybackLog(String message) async {
-    try {
-      final support = await getApplicationSupportDirectory();
-      final logDirectory = Directory(
-        '${support.path}${Platform.pathSeparator}logs',
-      );
-      await logDirectory.create(recursive: true);
-      final file = File(
-        '${logDirectory.path}${Platform.pathSeparator}soundneed.log',
-      );
-      final line =
-          '${DateTime.now().toIso8601String()} $message${Platform.lineTerminator}';
-      await file.writeAsString(line, mode: FileMode.append, flush: true);
-    } catch (_) {
-      // Logging must not interrupt playback.
-    }
+  Future<File> _getPlaybackLogFile() => _playbackLogFile ??= () async {
+    final support = await getApplicationSupportDirectory();
+    final logDirectory = Directory(
+      '${support.path}${Platform.pathSeparator}logs',
+    );
+    await logDirectory.create(recursive: true);
+    return File('${logDirectory.path}${Platform.pathSeparator}soundneed.log');
+  }();
+
+  Future<void> _writePlaybackLog(String message) {
+    final line =
+        '${DateTime.now().toIso8601String()} $message${Platform.lineTerminator}';
+    final write = _playbackLogWrites.then((_) async {
+      try {
+        final file = await _getPlaybackLogFile();
+        await file.writeAsString(line, mode: FileMode.append);
+      } catch (_) {
+        // Logging must not interrupt playback.
+      }
+    });
+    _playbackLogWrites = write;
+    return Future<void>.value();
   }
 
   void _onSearchChanged(String value) {
@@ -2069,6 +2584,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
     _onlineDebounce?.cancel();
     _queue.clear();
     _currentIndex = null;
+    _lastCompletedTrackKey = null; // Reset for new track
     if (queue != null) _onlinePlaybackQueue = List.of(queue);
     if (_onlinePlaybackQueue.isEmpty) _onlinePlaybackQueue = [track];
     _onlineQueueIndex =
@@ -2079,6 +2595,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
     setState(() {
       _playingOnlineTrack = track;
       _onlinePlaybackLoading = true;
+      _onlineQueueDiscoveryLoading = false;
       _error = null;
       _duration = null;
     });
@@ -2163,6 +2680,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
       unawaited(_startOnlinePlayback(requestId));
       _currentIndex = null;
       if (mounted) setState(() => _onlinePlaybackLoading = false);
+      unawaited(_extendOnlineQueueFromArtist(track, requestId));
       await _writePlaybackLog('Audio source loaded; playback requested');
       if (keepVideoMode && mounted) {
         unawaited(_playVideoPreview(null, track));
@@ -2184,10 +2702,23 @@ class _LibraryScreenState extends State<LibraryScreen> {
     }
   }
 
-  Future<void> _skipOnlineTrack(int direction) async {
+  Future<void> _skipOnlineTrack(
+    int direction, {
+    bool recordSkip = true,
+  }) async {
     if (_onlineAdvancing || _playingOnlineTrack == null) return;
     final nextIndex = _onlineQueueIndex + direction;
     if (nextIndex < 0 || nextIndex >= _onlinePlaybackQueue.length) return;
+    if (recordSkip && direction > 0) {
+      final skippedTrack = _playingOnlineTrack!;
+      unawaited(
+        ExploreFeedbackService.instance.recordInteraction(
+          title: skippedTrack.title,
+          artist: skippedTrack.artist,
+          type: FeedbackType.skip,
+        ),
+      );
+    }
     _onlineAdvancing = true;
     try {
       await _playOnlineTrack(
@@ -2211,9 +2742,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
       final nextIndex = _localAudioFallback.state.playlist.index;
       if (_videoMode && nextIndex != previousIndex && nextIndex >= 0) {
         final path = nextIndex < _queue.length ? _queue[nextIndex] : null;
-        final nextTrack = path == null
-            ? null
-            : _tracks.where((track) => track.path == path).firstOrNull;
+        final nextTrack = path == null ? null : _tracksByPath[path];
         if (nextTrack != null) await _playVideoPreview(nextTrack, null);
       }
       return;
@@ -2244,9 +2773,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
         nextIndex < _queue.length &&
         mounted) {
       final path = _queue[nextIndex];
-      final nextTrack = _tracks
-          .where((track) => track.path == path)
-          .firstOrNull;
+      final nextTrack = _tracksByPath[path];
       if (nextTrack != null) await _playVideoPreview(nextTrack, null);
     }
   }
@@ -2576,11 +3103,14 @@ class _LibraryScreenState extends State<LibraryScreen> {
   }
 
   Future<File> _onlineAudioCacheFile(_OnlineTrack track) async {
-    final support = await getApplicationSupportDirectory();
-    final cache = Directory(
-      '${support.path}${Platform.pathSeparator}online-audio-cache',
-    );
-    await cache.create(recursive: true);
+    final cache = await (_onlineAudioCacheDirectory ??= () async {
+      final support = await getApplicationSupportDirectory();
+      final directory = Directory(
+        '${support.path}${Platform.pathSeparator}online-audio-cache',
+      );
+      await directory.create(recursive: true);
+      return directory;
+    }());
     final key = sha1.convert(utf8.encode(track.videoId)).toString();
     return File('${cache.path}${Platform.pathSeparator}$key.mp4');
   }
@@ -2642,6 +3172,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
     _onlinePlaybackRequestId++;
     _search.dispose();
     _position.dispose();
+    _exploreSpectrum.dispose();
     _youtube.close();
     _player.dispose();
     unawaited(_videoPlayer.dispose());
@@ -2652,14 +3183,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final current =
-        _currentIndex != null &&
-            _currentIndex! >= 0 &&
-            _currentIndex! < _queue.length
-        ? _tracks
-              .where((track) => track.path == _queue[_currentIndex!])
-              .firstOrNull
-        : null;
+    final current = _currentLocalTrack;
     final ImageProvider<Object>? ambientArtwork =
         _playingOnlineTrack != null && _playingOnlineTrack!.thumbnail.isNotEmpty
         ? NetworkImage(_playingOnlineTrack!.thumbnail)
@@ -2819,11 +3343,11 @@ class _LibraryScreenState extends State<LibraryScreen> {
                                                 _sidebarCompactOverride ??
                                                 compact,
                                             onTogglePanel: (collapsed) =>
-                                                setState(
-                                                  () =>
-                                                      _sidebarCompactOverride =
-                                                          collapsed,
-                                                ),
+                                                setState(() {
+                                                  _sidebarCompactOverride =
+                                                      collapsed;
+                                                  _persistUiPreferences();
+                                                }),
                                           ),
                                   ),
                                 ),
@@ -2865,10 +3389,10 @@ class _LibraryScreenState extends State<LibraryScreen> {
                                               top: 0,
                                               bottom: 0,
                                               child: _NowPlayingEdgeToggle(
-                                                onPressed: () => setState(
-                                                  () => _nowPlayingCollapsed =
-                                                      false,
-                                                ),
+                                                onPressed: () => setState(() {
+                                                  _nowPlayingCollapsed = false;
+                                                  _persistUiPreferences();
+                                                }),
                                               ),
                                             ),
                                         ],
@@ -3084,8 +3608,8 @@ class _LibraryScreenState extends State<LibraryScreen> {
                 onlineArtwork: _playingOnlineTrack?.thumbnail,
                 spectrum: _exploreSpectrum,
                 onBackToDiscoveries: _returnToExploreDiscoveries,
-                recommendations: _exploreFeed.recommendations,
-                recommendationsLoading: _exploreRecommendationsLoading,
+                recommendations: _visualizerRecommendations,
+                recommendationsLoading: _onlineQueueDiscoveryLoading,
                 onPlayRecommendation: (recommendation) =>
                     unawaited(_playExploreRecommendation(recommendation)),
                 onPrevious: () => unawaited(_skipMiniPlayerTrack(-1)),
@@ -3253,11 +3777,16 @@ class _LibraryScreenState extends State<LibraryScreen> {
     ],
   );
 
-  Widget _queuePanel() => Material(
-    color: _raised,
-    elevation: 14,
-    borderRadius: BorderRadius.circular(16),
-    child: Column(
+  Widget _queuePanel() {
+    final onlineQueue = _playingOnlineTrack != null;
+    final queueLength = onlineQueue
+        ? _onlinePlaybackQueue.length
+        : _queue.length;
+    return Material(
+      color: _raised,
+      elevation: 14,
+      borderRadius: BorderRadius.circular(16),
+      child: Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Padding(
@@ -3271,13 +3800,16 @@ class _LibraryScreenState extends State<LibraryScreen> {
                 ),
               ),
               Text(
-                '${_queue.length}',
+                '$queueLength',
                 style: const TextStyle(color: _muted, fontSize: 11),
               ),
               IconButton(
                 tooltip: 'Cerrar cola',
                 visualDensity: VisualDensity.compact,
-                onPressed: () => setState(() => _queueOpen = false),
+                onPressed: () => setState(() {
+                  _queueOpen = false;
+                  _persistUiPreferences();
+                }),
                 icon: const Icon(Icons.close, size: 17),
               ),
             ],
@@ -3285,19 +3817,70 @@ class _LibraryScreenState extends State<LibraryScreen> {
         ),
         Divider(height: 1, color: Colors.white.withValues(alpha: .07)),
         Expanded(
-          child: _queue.isEmpty
+          child: queueLength == 0
               ? const Center(
                   child: Text(
                     'La cola está vacía',
                     style: TextStyle(color: _muted, fontSize: 12),
                   ),
                 )
+              : onlineQueue
+              ? ListView.builder(
+                  itemCount: _onlinePlaybackQueue.length,
+                  itemBuilder: (context, index) {
+                    final track = _onlinePlaybackQueue[index];
+                    final selected = index == _onlineQueueIndex;
+                    return ListTile(
+                      dense: true,
+                      onTap: () => unawaited(
+                        _playOnlineTrack(
+                          track,
+                          queue: _onlinePlaybackQueue,
+                          queueIndex: index,
+                        ),
+                      ),
+                      leading: ClipRRect(
+                        borderRadius: BorderRadius.circular(6),
+                        child: SizedBox(
+                          width: 34,
+                          height: 34,
+                          child: Image.network(
+                            track.thumbnail,
+                            fit: BoxFit.cover,
+                            errorBuilder: (_, _, _) => const Icon(
+                              Icons.music_note_rounded,
+                              color: _muted,
+                              size: 18,
+                            ),
+                          ),
+                        ),
+                      ),
+                      title: Text(
+                        track.title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: selected ? _cyan : Colors.white,
+                          fontSize: 11,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                      subtitle: Text(
+                        track.artist,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(color: _muted, fontSize: 10),
+                      ),
+                      trailing: selected
+                          ? const Icon(Icons.volume_up, size: 15, color: _cyan)
+                          : null,
+                    );
+                  },
+                )
               : ListView.builder(
                   itemCount: _queue.length,
                   itemBuilder: (context, index) {
-                    final track = _tracks
-                        .where((item) => item.path == _queue[index])
-                        .firstOrNull;
+                    final track = _tracksByPath[_queue[index]];
                     if (track == null) return const SizedBox.shrink();
                     final selected = index == _currentIndex;
                     return ListTile(
@@ -3329,7 +3912,8 @@ class _LibraryScreenState extends State<LibraryScreen> {
         ),
       ],
     ),
-  );
+      );
+  }
 
   Widget _emptyState() => Container(
     padding: const EdgeInsets.symmetric(vertical: 60, horizontal: 26),
@@ -3508,24 +4092,22 @@ class _LibraryScreenState extends State<LibraryScreen> {
             if (!plainMusicList)
               SizedBox(
                 width: 34,
-                child: Semantics(
-                  label: 'Reproducir',
-                  child: IconButton(
-                    visualDensity: VisualDensity.compact,
-                    onPressed: () => _playTrack(track),
-                    icon: Icon(
-                      playing
-                          ? Icons.equalizer_rounded
-                          : Icons.play_arrow_rounded,
-                      color: playing
-                          ? (neutralHome
-                                ? const Color(0xFFF4F3EF)
-                                : (plainMusicList
-                                      ? _appPalette.primary
-                                      : _cyan))
-                          : _muted,
-                      size: 19,
-                    ),
+                child: IconButton(
+                  tooltip: 'Reproducir',
+                  visualDensity: VisualDensity.compact,
+                  onPressed: () => _playTrack(track),
+                  icon: Icon(
+                    playing
+                        ? Icons.equalizer_rounded
+                        : Icons.play_arrow_rounded,
+                    color: playing
+                        ? (neutralHome
+                              ? const Color(0xFFF4F3EF)
+                              : (plainMusicList
+                                    ? _appPalette.primary
+                                    : _cyan))
+                        : _muted,
+                    size: 19,
                   ),
                 ),
               ),
@@ -3586,40 +4168,38 @@ class _LibraryScreenState extends State<LibraryScreen> {
                 ),
               ),
             ),
-            Semantics(
-              label: 'Más opciones',
-              child: TooltipVisibility(
-                visible: false,
-                child: PopupMenuButton<String>(
-                  iconSize: 17,
-                  padding: EdgeInsets.zero,
-                  onSelected: (value) {
-                    if (value == 'favorite') _toggleFavorite(track);
-                    if (value == 'playlist') _addToPlaylist(track);
-                    if (value == 'removeFromPlaylist') {
-                      _removeFromCurrentPlaylist(track.path);
-                    }
-                  },
-                  itemBuilder: (_) => [
-                    PopupMenuItem(
-                      value: 'favorite',
-                      child: Text(
-                        _favorites.contains(track.path)
-                            ? 'Quitar de favoritos'
-                            : 'Añadir a favoritos',
-                      ),
+            TooltipVisibility(
+              visible: false,
+              child: PopupMenuButton<String>(
+                tooltip: 'Más opciones',
+                iconSize: 17,
+                padding: EdgeInsets.zero,
+                onSelected: (value) {
+                  if (value == 'favorite') _toggleFavorite(track);
+                  if (value == 'playlist') _addToPlaylist(track);
+                  if (value == 'removeFromPlaylist') {
+                    _removeFromCurrentPlaylist(track.path);
+                  }
+                },
+                itemBuilder: (_) => [
+                  PopupMenuItem(
+                    value: 'favorite',
+                    child: Text(
+                      _favorites.contains(track.path)
+                          ? 'Quitar de favoritos'
+                          : 'Añadir a favoritos',
                     ),
+                  ),
+                  const PopupMenuItem(
+                    value: 'playlist',
+                    child: Text('Añadir a playlist'),
+                  ),
+                  if (_section == 'Playlists' && _playlistView != null)
                     const PopupMenuItem(
-                      value: 'playlist',
-                      child: Text('Añadir a playlist'),
+                      value: 'removeFromPlaylist',
+                      child: Text('Quitar de esta playlist'),
                     ),
-                    if (_section == 'Playlists' && _playlistView != null)
-                      const PopupMenuItem(
-                        value: 'removeFromPlaylist',
-                        child: Text('Quitar de esta playlist'),
-                      ),
-                  ],
-                ),
+                ],
               ),
             ),
           ],
@@ -3634,7 +4214,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
         child: SizedBox(
           width: size,
           height: size,
-          child: track.coverPath != null && File(track.coverPath!).existsSync()
+          child: track.coverPath != null && track.coverPath!.isNotEmpty
               ? Image.file(
                   File(track.coverPath!),
                   fit: BoxFit.cover,
@@ -3660,11 +4240,21 @@ class _LibraryScreenState extends State<LibraryScreen> {
   Widget _miniPlayer(Track? track, bool compact) {
     final onlineTrack = _playingOnlineTrack;
     final hasTrack = track != null || onlineTrack != null;
+    final collectionTrack = track ??
+        (onlineTrack == null ? null : _libraryTrackForOnline(onlineTrack));
+    final isAddedToCollection =
+        collectionTrack != null &&
+        (_favorites.contains(collectionTrack.path) ||
+            _playlists.values.any(
+              (paths) => paths.contains(collectionTrack.path),
+            ));
     final coverSize = compact ? 38.0 : 50.0;
     final coverPath = track?.coverPath;
-    final coverFile = coverPath == null ? null : File(coverPath);
+    final coverFile = coverPath == null || coverPath.isEmpty
+        ? null
+        : File(coverPath);
     final ImageProvider? artworkProvider =
-        coverFile != null && coverFile.existsSync()
+        coverFile != null
         ? FileImage(coverFile)
         : onlineTrack != null
         ? NetworkImage(onlineTrack.thumbnail)
@@ -3705,10 +4295,12 @@ class _LibraryScreenState extends State<LibraryScreen> {
             track?.artist ?? onlineTrack?.artist ?? 'Tu biblioteca te espera',
         cover: cover,
         artworkProvider: artworkProvider,
-        isFavorite: track != null && _favorites.contains(track.path),
-        onToggleFavorite: track == null
+        isAddedToCollection: isAddedToCollection,
+        onAddToCollections: collectionTrack == null
             ? null
-            : () => unawaited(_toggleFavorite(track)),
+            : () => unawaited(
+                _showMiniPlayerCollections(collectionTrack),
+              ),
         // The extracted audio is the playback source of truth. The video may
         // pause or end independently and must not make the mini player report
         // that the song has stopped.
@@ -3787,7 +4379,10 @@ class _LibraryScreenState extends State<LibraryScreen> {
           }
         },
         queueOpen: _queueOpen,
-        onToggleQueue: () => setState(() => _queueOpen = !_queueOpen),
+        onToggleQueue: () => setState(() {
+          _queueOpen = !_queueOpen;
+          _persistUiPreferences();
+        }),
         windowMaximized: _windowMaximized,
         onToggleWindowSize: () => unawaited(_toggleWindowMaximize()),
         panelColor: _panel,
@@ -3840,15 +4435,27 @@ class _LibraryScreenState extends State<LibraryScreen> {
       videoLoading: _videoLoading,
       onCollapse: () => setState(() {
         _nowPlayingCollapsed = true;
+        _persistUiPreferences();
       }),
       onOpenExplore: _openCurrentTrackInExplore,
       videoEnabled: onlineTrack?.directAudioUrl == null,
       onVideoTap: onlineTrack?.directAudioUrl != null || _videoLoading
           ? null
           : () async {
-              // Small delay to let audio stabilize if it just started
+              // Wait for audio to finish loading before starting video to prevent lag
               if (_playingOnlineTrack != null && _onlinePlaybackLoading) {
-                await Future.delayed(const Duration(milliseconds: 500));
+                // Wait up to 30 seconds for audio to finish loading
+                final audioLoaded = _player.playerStateStream
+                    .firstWhere(
+                      (state) =>
+                          state.processingState == ProcessingState.ready &&
+                          !_onlinePlaybackLoading,
+                    )
+                    .timeout(
+                      const Duration(seconds: 30),
+                      onTimeout: () => _player.playerState,
+                    );
+                await audioLoaded;
               }
               unawaited(
                 _videoMode
@@ -3893,7 +4500,10 @@ class _LibraryScreenState extends State<LibraryScreen> {
     if (_videoMode) {
       await _videoPlayer.stop();
       if (!mounted) return;
-      setState(() => _videoMode = false);
+      setState(() {
+        _videoMode = false;
+        _persistUiPreferences();
+      });
     }
     if (_usingMediaKitForLocalAudio) return;
     await _player.play();
@@ -3956,6 +4566,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
         // Never leave the previous song's video visible while resolving this one.
         _videoPreviewUnavailable = true;
         _videoReadyTrackKey = null;
+        _persistUiPreferences();
       });
     }
     try {
@@ -4145,6 +4756,9 @@ class _LibraryScreenState extends State<LibraryScreen> {
       try {
         final audioPosition = await audioReadyFuture;
         await _videoPlayer.seek(audioPosition);
+        // Add a small delay to allow video buffering before starting playback
+        await Future.delayed(const Duration(milliseconds: 500));
+        if (!mounted || requestId != _videoPlaybackRequestId) return;
         // Start playing immediately to show video to user
         await _videoPlayer.play();
         // Show video as soon as it starts playing, don't wait for perfect sync
@@ -4195,6 +4809,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
           setState(() {
             _videoMode = false;
             _videoPreviewUnavailable = true;
+            _persistUiPreferences();
           });
         }
       }
